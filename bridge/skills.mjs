@@ -265,6 +265,79 @@ function macTools() {
 }
 
 // ---------------------------------------------------------------------------
+// Phone alerts — push notifications through ntfy (https://ntfy.sh)
+// ---------------------------------------------------------------------------
+//
+// Free, no account. The phone runs the ntfy app subscribed to one topic; a
+// POST to that topic pops up on the phone with a sound. The topic name is the
+// only secret, so it is long and random, and kept in the state folder.
+
+let settingsDir = null
+const settingsFile = () => join(settingsDir, 'settings.json')
+const NTFY = (process.env.JARVIS_NTFY_SERVER || 'https://ntfy.sh').replace(/\/+$/, '')
+
+export function phoneTopic({ create = false } = {}) {
+  if (process.env.JARVIS_NTFY_TOPIC) return process.env.JARVIS_NTFY_TOPIC
+  if (!settingsDir) return null
+  const settings = readJson(settingsFile(), {})
+  if (settings.phoneTopic || !create) return settings.phoneTopic ?? null
+  const topic = `jarvis-${Array.from({ length: 16 }, () => Math.floor(Math.random() * 36).toString(36)).join('')}`
+  writeJson(settingsFile(), { ...settings, phoneTopic: topic })
+  return topic
+}
+
+/** Send one alert to the phone. Throws if it could not be delivered. */
+export async function sendPhoneAlert(message, { title = 'JARVIS', urgent = true } = {}) {
+  const topic = phoneTopic()
+  if (!topic) throw new Error('the phone is not set up yet (phone_setup)')
+  const res = await fetch(`${NTFY}/${encodeURIComponent(topic)}`, {
+    method: 'POST',
+    body: String(message).slice(0, 1000),
+    headers: {
+      Title: String(title).replace(/[^\x20-\x7e]/g, '').slice(0, 100) || 'JARVIS',
+      // 5 = max: long vibration and sound. 3 = an ordinary notification.
+      Priority: urgent ? '5' : '3',
+      Tags: urgent ? 'rotating_light' : 'robot',
+    },
+    signal: AbortSignal.timeout(10000),
+  })
+  if (!res.ok) throw new Error(`ntfy answered ${res.status}`)
+}
+
+function phoneTools() {
+  return [
+    tool(
+      'phone_setup',
+      'Set up (or show) alerts to the user\'s phone. Returns the topic name to subscribe to in the free ntfy app. Show it on screen, never read the topic letters aloud.',
+      {},
+      async () => {
+        const topic = phoneTopic({ create: true })
+        return ok(
+          `Phone topic: ${topic}\nOn the phone: install "ntfy" from the App Store or Google Play, tap +, enter the topic exactly, Subscribe, and allow notifications. ` +
+            `Subscribe link: ${NTFY}/${topic}\nThen send a test with phone_alert.`,
+        )
+      },
+    ),
+    tool(
+      'phone_alert',
+      '"Call me", "ping my phone", "alert my phone": push a loud alert with a short message to the user\'s phone, wherever they are. It is a notification, not a ringing phone call. Not set up yet? Use phone_setup.',
+      {
+        message: z.string().describe('What the alert says, e.g. "Leave for the airport now."'),
+        urgent: z.union([z.boolean(), z.string()]).optional().catch(undefined).describe('Default true (loud). false for a quiet one.'),
+      },
+      async ({ message, urgent }) => {
+        try {
+          await sendPhoneAlert(message, { urgent: !(urgent === false || /^(false|no|0)$/i.test(String(urgent ?? ''))) })
+          return ok('Alert sent to the phone.')
+        } catch (err) {
+          return fail(`Couldn't alert the phone: ${err.message}.`)
+        }
+      },
+    ),
+  ]
+}
+
+// ---------------------------------------------------------------------------
 // Timers and reminders
 // ---------------------------------------------------------------------------
 
@@ -303,6 +376,12 @@ function fire(t) {
   console.log(`[jarvis] ${t.kind} fired: ${t.label || t.id}`)
   if (listeners.size) for (const fn of listeners) fn({ text, kind: t.kind, label: t.label })
   else void notifyMac('JARVIS', text.replace(/^Sir, /, ''))
+  // Asked for on this one, or nobody is at the Mac to hear it: the phone too.
+  if (t.phone || (!listeners.size && phoneTopic())) {
+    sendPhoneAlert(text.replace(/^Sir, /, ''), { title: t.kind === 'timer' ? 'Timer' : 'Reminder' }).catch((err) =>
+      console.warn(`[jarvis] phone alert failed: ${err.message}`),
+    )
+  }
 }
 
 function tick() {
@@ -371,11 +450,11 @@ function timerTools() {
     tool(
       'timer_set',
       'Start a countdown timer, e.g. "10 minute pasta timer". Give the duration in seconds/minutes/hours. When it ends JARVIS says so out loud.',
-      { ...when, label: looseText('Short name, e.g. "pasta". Optional.') },
+      { ...when, label: looseText('Short name, e.g. "pasta". Optional.'), phone: looseText('"true" to also alert their phone.') },
       async (args) => {
         const at = parseWhen({ ...args, at: undefined })
         if (!at) return fail('Give the timer a duration.')
-        const t = { id: newId(), kind: 'timer', label: (args.label ?? '').slice(0, 80), at, set: Date.now() }
+        const t = { id: newId(), kind: 'timer', label: (args.label ?? '').slice(0, 80), at, set: Date.now(), phone: /^(true|yes|1)$/i.test(String(args.phone ?? '')) }
         timers.push(t)
         saveTimers()
         return ok(`Timer set: ${spokenDuration(at - Date.now())}. ${describeTimer(t)}`)
@@ -384,11 +463,15 @@ function timerTools() {
     tool(
       'reminder_set',
       'Remind the user of something later, e.g. "remind me at 5 to call mom" or "in 2 hours to stretch". JARVIS speaks the reminder when it is due.',
-      { ...when, text: z.string().describe('What to remind them of, in a few words.') },
+      {
+        ...when,
+        text: z.string().describe('What to remind them of, in a few words.'),
+        phone: looseText('"true" to also alert their phone ("remind me on my phone…", or they will be away from the Mac).'),
+      },
       async (args) => {
         const at = parseWhen(args)
         if (!at) return fail('I need a time ("17:30") or a delay (minutes/hours).')
-        const t = { id: newId(), kind: 'reminder', label: String(args.text).slice(0, 200), at, set: Date.now() }
+        const t = { id: newId(), kind: 'reminder', label: String(args.text).slice(0, 200), at, set: Date.now(), phone: /^(true|yes|1)$/i.test(String(args.phone ?? '')) }
         timers.push(t)
         saveTimers()
         return ok(`Reminder set for ${new Date(at).toLocaleString('en-GB', { weekday: 'long', hour: '2-digit', minute: '2-digit' })}. ${describeTimer(t)}`)
@@ -983,7 +1066,9 @@ function clockTool() {
 export function skillsServer({ stateDir, disabled = new Set(), allowWrites = false, power, mic }) {
   mkdirSync(stateDir, { recursive: true })
   micStateDir = stateDir
+  settingsDir = stateDir
   const tools = [clockTool(), ...powerTools({ power, mic })]
+  if (!disabled.has('phone')) tools.push(...phoneTools())
   if (!disabled.has('mac')) tools.push(...macTools(), ...settingsTools({ allowWrites }), ...webFileTools(), ...writeTools({ allowWrites }))
   if (!disabled.has('timers')) {
     startTimers(stateDir)
@@ -1008,6 +1093,9 @@ export const PROMPT_SKILLS = `Your everyday skills (the jarvis_skills tools):
 - Daily brief: call daily_brief, then give it in three or four short sentences.
 - "Go to sleep" / "that's all": jarvis_power sleep. "Shut down" / "turn yourself
   off": jarvis_power shutdown. Either way one short goodbye, nothing more.
+- "Call me" / "ping my phone": phone_alert with a short message. It is a loud
+  notification, not a phone call; say "Sent to your phone", never "calling".
+  For reminders while they're out, set phone true on the reminder.
 - "Mute me": mic_mute, then tell them once how to unmute (press M on the screen).
 - Websites, folders, screenshots, dark mode, Wi-Fi: just do it and confirm.
 - Anything else on the Mac: check mac_shortcuts_list; their own Shortcuts may do it.
