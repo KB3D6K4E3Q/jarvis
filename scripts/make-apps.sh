@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build two small Mac apps in ~/Applications that run scripts/jarvis.sh:
+# Build two small Mac apps in /Applications that run scripts/jarvis.sh:
 #
 #   Jarvis.app       starts JARVIS in the background and opens it in Chrome
 #   Stop Jarvis.app  turns it off
@@ -10,7 +10,11 @@
 
 set -eu
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-DEST="$HOME/Applications"
+# /Applications if we may write there (admin accounts can), else ~/Applications.
+# JARVIS_APPS_DIR picks somewhere else.
+if [ -n "${JARVIS_APPS_DIR:-}" ]; then DEST="$JARVIS_APPS_DIR"
+elif [ -w /Applications ]; then DEST="/Applications"
+else DEST="$HOME/Applications"; fi
 mkdir -p "$DEST"
 chmod +x "$HERE/scripts/jarvis.sh"
 
@@ -34,6 +38,18 @@ EOF
 
 make_app "Jarvis" start
 make_app "Stop Jarvis" stop
+# One copy of each, so Spotlight and Siri don't find two: drop copies an
+# earlier run left in the other place (only ones that run this jarvis.sh).
+for other in /Applications "$HOME/Applications"; do
+  [ "$other" = "$DEST" ] && continue
+  for name in "Jarvis" "Stop Jarvis"; do
+    app="$other/$name.app"
+    [ -d "$app" ] || continue
+    if osadecompile "$app/Contents/Resources/Scripts/main.scpt" 2>/dev/null | grep -qF "$HERE/scripts/jarvis.sh"; then
+      rm -rf "$app" && echo "  removed the old copy in $other"
+    fi
+  done
+done
 # Let Spotlight and Siri see them straight away.
 mdimport "$DEST" 2>/dev/null || true
 echo "Done. Try Cmd-Space, \"Jarvis\", or \"Hey Siri, open Jarvis\"."
