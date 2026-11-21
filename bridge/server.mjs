@@ -21,6 +21,7 @@ import { displayServer } from './panels.mjs'
 import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
+import { customSkillsPrompt, onAnnounce, PROMPT_SKILLS, seedSkills, skillsServer } from './skills.mjs'
 import { homedir, tmpdir } from 'node:os'
 import { mkdirSync, readFileSync, realpathSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
@@ -287,6 +288,17 @@ const WORKSPACE = resolvePath(
 )
 mkdirSync(WORKSPACE, { recursive: true })
 
+/**
+ * Where the skills keep their state (timers, memories, settings) and where the
+ * user's own plain-text routines live. Both beside the workspace, under
+ * ~/.jarvis, so nothing a skill writes lands anywhere else on disk.
+ */
+const SKILLS_STATE = join(WORKSPACE, '..', 'state')
+const SKILLS_DIR = resolvePath(
+  process.env.JARVIS_SKILLS_DIR ?? join(homedir(), '.jarvis', 'skills'),
+)
+seedSkills(SKILLS_DIR)
+
 const TOOL_ROOTS = fileRoots({
   workspace: WORKSPACE,
   extra: (process.env.JARVIS_FILE_ROOTS ?? '')
@@ -487,6 +499,7 @@ const SYSTEM_PROMPT = [
   DISABLED.has('interface') ? '' : PROMPT_INTERFACE,
   DISABLED.has('browser') ? '' : PROMPT_BROWSER,
   DISABLED.has('camera') ? '' : PROMPT_EYES,
+  DISABLED.has('skills') ? '' : PROMPT_SKILLS,
   PROMPT_TOOLS,
 ].join('')
 
@@ -1088,6 +1101,11 @@ console.log(
 )
 console.log(`[jarvis] model ${MODEL} · effort ${EFFORT}`)
 console.log(
+  DISABLED.has('skills')
+    ? '[jarvis] skills off'
+    : `[jarvis] skills on · your routines in ${SKILLS_DIR}`,
+)
+console.log(
   `[jarvis] MCP servers from config: ${Object.keys(MCP_SERVERS).join(', ') || 'none'}` +
     (ACCOUNT_CONNECTORS ? ' · account connectors ON' : ' · account connectors off'),
 )
@@ -1318,12 +1336,18 @@ wss.on('connection', (socket) => {
           : { jarvis_chrome: chromeServer({ allowWrites: ALLOW_WRITES }) }),
         // The camera, which unlike everything else here has to ask and wait.
         ...(DISABLED.has('camera') ? {} : { jarvis_eyes: visionServer(ask) }),
+        // Everyday skills: Mac control, timers, memory, weather. Built once
+        // per connection like the rest; timers are shared across connections.
+        ...(DISABLED.has('skills')
+          ? {}
+          : { jarvis_skills: skillsServer({ stateDir: SKILLS_STATE, disabled: DISABLED }) }),
       },
       // A plain system prompt, not the claude_code preset. The preset is
       // tuned for a coding agent — verbose, file-oriented, and a large chunk
       // of input tokens on every turn. Replacing it makes the persona stick,
       // keeps answers short enough to speak, and cuts cost per turn.
-      systemPrompt: SYSTEM_PROMPT,
+      // Re-read per connection so an edited routine needs a reload, not a restart.
+      systemPrompt: SYSTEM_PROMPT + customSkillsPrompt(SKILLS_DIR),
       // Run from JARVIS's own workspace rather than the home directory. MCP
       // discovery does not depend on it — settingSources is empty and the
       // servers are passed in explicitly above — and file tools resolve
@@ -1595,8 +1619,12 @@ wss.on('connection', (socket) => {
     }
   })
 
+  // A timer or reminder going off speaks on this face.
+  const stopAnnouncing = onAnnounce((alert) => send({ type: 'announce', ...alert }))
+
   socket.on('close', () => {
     console.log('[jarvis] client disconnected')
+    stopAnnouncing()
     closed = true
     deliver?.(null)
     session.close?.()

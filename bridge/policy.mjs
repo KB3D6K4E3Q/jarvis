@@ -153,6 +153,13 @@ export function decideTool(name, allowWrites = false) {
     // indicator the user can see for as long as it is live.
     if (server === 'jarvis_eyes') return true
 
+    // The everyday skills. Like the browser server it gates itself: a fixed
+    // set of actions with fixed arguments (open an app, set the volume, start
+    // a timer, save a note to its own file) and no shell. The verb rules
+    // would read `timer_set` or `memory_save` as writes and withhold the
+    // whole server in the default read-only mode, which is what it is for.
+    if (server === 'jarvis_skills') return true
+
     const tool = mcpToolOf(name)
     if (EFFECTFUL_VERB.test(tool) && !VETO_EXEMPT.has(`${server}__${tool}`)) {
       return allowWrites

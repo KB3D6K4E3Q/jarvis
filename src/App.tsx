@@ -24,6 +24,7 @@ import {
   watchBlades,
   watchCapture,
   watchUi,
+  watchAnnounce,
   watchConnection,
   connectedLabels,
   usingBridge,
@@ -364,6 +365,26 @@ export default function App() {
     watchServers((servers) => store.getState().setConnected(servers))
     watchPanels((panel) => store.getState().pushPanel(panel))
     watchBlades((blade) => store.getState().pushBlade(blade))
+
+    // A timer or reminder is due. Spoken whatever he is doing — dormant
+    // included, since a reminder that waits for the wake word is no reminder.
+    // Mid-answer it joins his current speech rather than talking over it.
+    watchAnnounce(({ text }) => {
+      const st = store.getState()
+      if (st.phase === 'offline' || st.phase === 'boot') return
+      sfx.play('done')
+      st.pushTurn({ id: newId(), role: 'jarvis', text })
+      st.setCaption(text)
+      const busy = st.phase === 'thinking' || st.phase === 'tooling' || st.phase === 'speaking'
+      if (busy && speaker.current) {
+        speaker.current.say(text)
+        return
+      }
+      const spk = createSpeaker()
+      speaker.current = spk
+      spk.say(text)
+      void spk.end()
+    })
 
     /**
      * JARVIS asking to see something.

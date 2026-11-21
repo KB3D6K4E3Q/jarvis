@@ -34,6 +34,8 @@ type Frame = {
   mode?: string
   seconds?: number
   when?: string
+  kind?: string
+  label?: string
   servers?: Array<string | { name?: string }>
 }
 
@@ -98,6 +100,14 @@ export function watchBlades(fn: (blade: Blade) => void) {
 let onUi: ((op: string, args: any) => void) | null = null
 export function watchUi(fn: (op: string, args: any) => void) {
   onUi = fn
+}
+
+/** A timer or reminder going off. Arrives with no turn in flight at all —
+ *  the bridge's clock pushes it whenever it is due. */
+export type Announcement = { text: string; kind?: string; label?: string }
+let onAnnounce: ((a: Announcement) => void) | null = null
+export function watchAnnounce(fn: (a: Announcement) => void) {
+  onAnnounce = fn
 }
 
 /**
@@ -207,6 +217,8 @@ function dispatch(ws: WebSocket) {
       // A `ui` frame with no args is normal — reset and clear take none — so an
       // absent args object is an empty one, not a reason to drop the command.
       onUi?.(msg.op, (msg.args ?? {}) as Record<string, unknown>)
+    } else if (msg.type === 'announce' && msg.text) {
+      onAnnounce?.({ text: msg.text, kind: msg.kind, label: msg.label })
     }
   })
 }
