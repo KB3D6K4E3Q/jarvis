@@ -69,3 +69,12 @@ test('siteUrl understands names, domains and URLs, and nothing else', async () =
   assert.equal(siteUrl('javascript:alert(1)'), null)
   assert.equal(siteUrl('some random words'), null)
 })
+
+test('spotifyUri turns links into URIs and refuses anything else', async () => {
+  const { spotifyUri } = await import('../bridge/skills.mjs')
+  assert.equal(spotifyUri('https://open.spotify.com/track/4u7EnebtmKWzUH433cf5Qv?si=abc'), 'spotify:track:4u7EnebtmKWzUH433cf5Qv')
+  assert.equal(spotifyUri('https://open.spotify.com/intl-de/album/1GbtB4zTqAsyfZEsm1RZfx'), 'spotify:album:1GbtB4zTqAsyfZEsm1RZfx')
+  assert.equal(spotifyUri('spotify:playlist:37i9dQZF1DXcBWIGoYBM5M'), 'spotify:playlist:37i9dQZF1DXcBWIGoYBM5M')
+  assert.equal(spotifyUri('https://evil.example/track/4u7EnebtmKWzUH433cf5Qv'), null)
+  assert.equal(spotifyUri('spotify:track:x" & do shell script "rm'), null)
+})

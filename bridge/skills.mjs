@@ -265,6 +265,109 @@ function macTools() {
 }
 
 // ---------------------------------------------------------------------------
+// Spotify — play exactly what they ask for, not just play/pause
+// ---------------------------------------------------------------------------
+
+/** An open.spotify.com link or a spotify: URI, to a spotify: URI — or null. */
+export function spotifyUri(input) {
+  const s = String(input ?? '').trim()
+  const uri = s.match(/^spotify:(track|album|playlist|artist|episode|show):([A-Za-z0-9]{10,40})$/)
+  if (uri) return s
+  const url = s.match(/^https?:\/\/open\.spotify\.com\/(?:intl-[a-z-]+\/)?(?:embed\/)?(track|album|playlist|artist|episode|show)\/([A-Za-z0-9]{10,40})/)
+  return url ? `spotify:${url[1]}:${url[2]}` : null
+}
+
+const SPOTIFY = (body) => ['on run argv', 'tell application "Spotify"', ...body, 'end tell', 'end run']
+
+async function spotifyReady() {
+  if (!installedApps().has('spotify')) throw new Error('Spotify is not installed')
+  const running = await osa(['return application "Spotify" is running'])
+  if (running !== 'true') {
+    await run('open', ['-a', 'Spotify'], { timeout: 8000 })
+    await new Promise((r) => setTimeout(r, 2500))
+  }
+}
+
+async function nowPlaying() {
+  try {
+    return await osa(
+      SPOTIFY([
+        'if player state is playing then',
+        'return (name of current track) & " by " & (artist of current track) & " — " & (album of current track)',
+        'else',
+        'return "nothing playing"',
+        'end if',
+      ]),
+    )
+  } catch {
+    return 'unknown'
+  }
+}
+
+function spotifyTools() {
+  if (!IS_MAC || !installedApps().has('spotify')) return []
+  return [
+    tool(
+      'spotify_play',
+      'Play a specific song, album, playlist, artist or podcast in Spotify. Needs its Spotify link or URI: when they name something ("play Bohemian Rhapsody", "play lofi beats playlist"), ' +
+        'first WebSearch for it with "site:open.spotify.com", take the best open.spotify.com/track|album|playlist|artist link, and pass it here. ' +
+        'If no link turns up, pass search instead to open Spotify\'s search for them.',
+      {
+        link: looseText('An open.spotify.com link or spotify: URI.'),
+        search: looseText('Fallback: words to search for in the Spotify app.'),
+      },
+      async ({ link, search }) => {
+        try {
+          await spotifyReady()
+          const uri = spotifyUri(link)
+          if (uri) {
+            await osa(SPOTIFY(['play track (item 1 of argv)']), [uri])
+            await new Promise((r) => setTimeout(r, 1200))
+            return ok(`Playing. Now: ${await nowPlaying()}.`)
+          }
+          if (search) {
+            await run('open', [`spotify:search:${encodeURIComponent(search)}`], { timeout: 8000 })
+            return ok(`Spotify search for "${search}" is open; nothing playing yet — they pick, or find a link and call again.`)
+          }
+          return fail('Give a Spotify link (search the web for it first) or search words.')
+        } catch (err) {
+          return fail(`Spotify: ${err.message}`)
+        }
+      },
+    ),
+    tool(
+      'spotify_control',
+      'Spotify settings while playing: shuffle on/off, repeat on/off, Spotify\'s own volume 0-100, skip forward/back by seconds, or now_playing.',
+      {
+        shuffle: onOff('true / false.'),
+        repeat: onOff('true / false.'),
+        volume: looseNumber('Spotify volume 0-100 (not the Mac volume).'),
+        seek: looseNumber('Seconds to jump: 30 forward, -15 back.'),
+      },
+      async ({ shuffle, repeat, volume, seek }) => {
+        try {
+          await spotifyReady()
+          const sh = wantOn(shuffle, false)
+          const rp = wantOn(repeat, false)
+          if (sh !== undefined) await osa(SPOTIFY([`set shuffling to ${sh}`]))
+          if (rp !== undefined) await osa(SPOTIFY([`set repeating to ${rp}`]))
+          if (num(volume) !== undefined) {
+            await osa(SPOTIFY(['set sound volume to (item 1 of argv as integer)']), [String(Math.round(Math.min(100, Math.max(0, num(volume)))))])
+          }
+          if (num(seek) !== undefined) {
+            await osa(SPOTIFY(['set player position to (player position + (item 1 of argv as real))']), [String(num(seek))])
+          }
+          const state = await osa(SPOTIFY(['return "shuffle " & shuffling & ", repeat " & repeating & ", volume " & sound volume']))
+          return ok(`${await nowPlaying()}. (${state})`)
+        } catch (err) {
+          return fail(`Spotify: ${err.message}`)
+        }
+      },
+    ),
+  ]
+}
+
+// ---------------------------------------------------------------------------
 // Phone alerts — push notifications through ntfy (https://ntfy.sh)
 // ---------------------------------------------------------------------------
 //
@@ -1069,6 +1172,7 @@ export function skillsServer({ stateDir, disabled = new Set(), allowWrites = fal
   settingsDir = stateDir
   const tools = [clockTool(), ...powerTools({ power, mic })]
   if (!disabled.has('phone')) tools.push(...phoneTools())
+  if (!disabled.has('mac') && !disabled.has('spotify')) tools.push(...spotifyTools())
   if (!disabled.has('mac')) tools.push(...macTools(), ...settingsTools({ allowWrites }), ...webFileTools(), ...writeTools({ allowWrites }))
   if (!disabled.has('timers')) {
     startTimers(stateDir)
@@ -1093,6 +1197,9 @@ export const PROMPT_SKILLS = `Your everyday skills (the jarvis_skills tools):
 - Daily brief: call daily_brief, then give it in three or four short sentences.
 - "Go to sleep" / "that's all": jarvis_power sleep. "Shut down" / "turn yourself
   off": jarvis_power shutdown. Either way one short goodbye, nothing more.
+- Spotify: "play <song/artist/playlist>" → WebSearch site:open.spotify.com, then
+  spotify_play with the link. Pause, skip, next: mac_music. Shuffle, repeat,
+  Spotify volume, jump ahead: spotify_control. Confirm with the track name only.
 - "Call me" / "ping my phone": phone_alert with a short message. It is a loud
   notification, not a phone call; say "Sent to your phone", never "calling".
   For reminders while they're out, set phone true on the reminder.
