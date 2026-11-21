@@ -29,7 +29,8 @@ export type VoiceMode =
   | 'wake'
   /** He is expecting you to speak. Everything is a command. */
   | 'command'
-  /** He is thinking or talking. Anything you say is an interruption. */
+  /** He is thinking, working or talking. Only his name interrupts him —
+   *  other talk in the room is ignored until he is free again. */
   | 'guard'
   /** Something is playing that must not be transcribed at all. */
   | 'deaf'
@@ -494,6 +495,20 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
         return
       }
 
+      // Busy: talk that doesn't name him is not for him.
+      if (mode === 'guard') {
+        if (!WAKE.test(said)) {
+          drop(`busy — heard "${said.slice(-40)}" without his name`)
+          return
+        }
+        const since = speakingSince()
+        if (since && Date.now() - since < SELF_GUARD_MS) {
+          diag.selfGuarded++
+          return
+        }
+        h.onSpeechStart()
+      }
+
       // Not a turn yet — a piece of one. The assembler decides when the thought
       // is finished, reading the words and whether the room is still noisy.
       assemble.feed(said, vad?.meter().speaking ?? false)
@@ -526,17 +541,8 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
       // Standing down mid-thought throws the thought away with it. Otherwise
       // held text would surface as the opening of the *next* conversation.
       if (mode === 'wake') assemble.cancel()
-      // The barge-in. In guard mode the user has started talking over him, and
-      // because the guard threshold is high this is a real interruption rather
-      // than leaked playback — so cut him off now, do not wait for the words.
-      if (mode === 'guard') {
-        const since = speakingSince()
-        if (since && Date.now() - since < SELF_GUARD_MS) {
-          diag.selfGuarded++
-          return
-        }
-        h.onSpeechStart()
-      }
+      // No barge-in on loudness alone while he is busy: only his name may cut
+      // in, and that can't be known until the words come back (transcribe).
     },
     onEnd: (blob) => {
       pendingAudio.push(blob)
@@ -722,25 +728,25 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     settled += fresh
     const full = `${settled} ${interim}`.replace(/\s+/g, ' ').trim()
     if (!started || (mode === 'guard' && !barged)) {
-      const words = full.split(/\s+/).filter(Boolean).length
       if (mode === 'guard') {
-        // An override word cuts through everything below it — "stop" has to
-        // work on the first syllable or it is not a stop button.
-        if (!OVERRIDE.test(full)) {
-          // His own first syllable, same as the premium path. This engine has
-          // no energy gate, so without the clock the only defence is the word
-          // count below, and a single clear word is exactly what leaks first.
-          const since = speakingSince()
-          if (since && Date.now() - since < SELF_GUARD_MS) {
-            diag.selfGuarded++
-            return
-          }
-          // Two words before this engine believes an interruption. The energy
-          // path can be instant because it triggers on loudness the canceller
-          // has already had a pass at; here the evidence is a transcript of
-          // audio that includes his own playback, and one word of that is not
-          // evidence of anything.
-          if (words < 2) return
+        // Busy: only his name gets through. Everything else said in the room
+        // is thrown away as it arrives, so it can't pile up and surface as the
+        // start of the next question. His name alone is enough — "Jarvis" is
+        // the natural way to cut in.
+        if (!WAKE.test(full)) {
+          settled = ''
+          return
+        }
+        // Keep the settled text from his name on ("…so anyway, Jarvis, stop").
+        // Interim text is rebuilt on every result, so it is left alone; the app
+        // trims anything still in front of the name.
+        const inSettled = WAKE.exec(settled)
+        settled = inSettled ? settled.slice(inSettled.index) : ''
+        // His own first syllable: a name he speaks himself is not the user.
+        const since = speakingSince()
+        if (since && Date.now() - since < SELF_GUARD_MS) {
+          diag.selfGuarded++
+          return
         }
       }
       started = true

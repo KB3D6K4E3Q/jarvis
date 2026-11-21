@@ -71,6 +71,8 @@ const NAME = '(?:jarvis|jarvys|jervis|travis|jarviss|java\'s|jarv)'
 /** A bare vocative — "Jarvis", "hey jarvis" — with nothing asked. */
 const BARE_NAME = new RegExp(`^(?:hey|hi|ok|okay|yo)?\\s*${NAME}[\\s,.!?]*$`, 'i')
 /** A leading vocative on a real command: "Jarvis, what's the weather". */
+/** Everything up to and including his name — for a cut-in that began mid-chatter. */
+const UP_TO_NAME = new RegExp(`^.*?\\b(?:hey|hi|ok|okay|yo)?\\s*${NAME}\\b[\\s,.:!?-]*`, 'i')
 const LEADING_NAME = new RegExp(`^(?:hey|hi|ok|okay|yo)?\\s*${NAME}\\b[\\s,.:!?-]*`, 'i')
 
 export default function App() {
@@ -81,6 +83,8 @@ export default function App() {
   /** Set by "go to sleep" / "shut down" mid-turn; acted on once he has finished speaking. */
   const pendingPower = useRef<string | null>(null)
   const micMuted = useRef(false)
+  /** He was busy and got called by name; see onUtterance. */
+  const calledWhileBusy = useRef(false)
   const voice = useRef<Voice | null>(null)
 
   /**
@@ -295,6 +299,7 @@ export default function App() {
 
     silence()
     if (wasBusy) {
+      calledWhileBusy.current = true
       // Abandon the answer in flight. The turn counter moves in respond()'s
       // replacement; bumping it here covers the case where nothing replaces it.
       turn.current++
@@ -317,7 +322,10 @@ export default function App() {
       listen(AWAIT_SPEECH_MS)
       return
     }
-    const said = text.replace(LEADING_NAME, '').trim()
+    // Called while he was busy, the words before his name were someone else's.
+    const cutIn = calledWhileBusy.current
+    calledWhileBusy.current = false
+    const said = (cutIn ? text.replace(UP_TO_NAME, '') : text.replace(LEADING_NAME, '')).trim()
     if (!said) {
       listen(AWAIT_SPEECH_MS)
       return
