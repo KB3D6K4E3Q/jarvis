@@ -739,6 +739,16 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
 
+    // Opened by the Jarvis app, Siri or login (…/?auto=1): power straight up,
+    // no INITIALISE click. That window is a Chrome launched to allow sound
+    // without a click (scripts/jarvis.sh). In an ordinary tab the browser may
+    // keep the sound locked; press INITIALISE or Space there as before.
+    if (new URLSearchParams(window.location.search).has('auto')) {
+      window.setTimeout(() => {
+        if (store.getState().phase === 'offline') void powerOn()
+      }, 300)
+    }
+
     return () => {
       cancelAnimationFrame(raf)
       window.removeEventListener('keydown', onKey)

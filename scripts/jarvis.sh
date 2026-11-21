@@ -47,8 +47,43 @@ notify() {
   osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "JARVIS"' -e 'end run' "$1" >/dev/null 2>&1 || true
 }
 
+# The face gets its own Chrome window with its own profile, started so that
+# it needs no clicks: sound plays without a gesture, the microphone is already
+# allowed for this one local page, and the page powers itself up (?auto=1).
+# Your normal Chrome, its tabs and its settings are untouched.
+CHROME="/Applications/Google Chrome.app"
+PROFILE="$STATE/chrome-profile"
+face_open() { pgrep -f -- "--user-data-dir=$PROFILE" >/dev/null 2>&1; }
+
+allow_mic() {
+  # Only while that Chrome is closed, or it would overwrite the change.
+  face_open && return 0
+  mkdir -p "$PROFILE/Default"
+  node -e '
+    const fs = require("fs"), f = process.argv[1]
+    let p = {}
+    try { p = JSON.parse(fs.readFileSync(f, "utf8")) } catch {}
+    const ex = (((p.profile ??= {}).content_settings ??= {}).exceptions ??= {})
+    for (const k of ["media_stream_mic"]) (ex[k] ??= {})["http://localhost:5173,*"] = { setting: 1 }
+    fs.writeFileSync(f, JSON.stringify(p))
+  ' "$PROFILE/Default/Preferences" 2>/dev/null || true
+}
+
 open_face() {
-  if [ -d "/Applications/Google Chrome.app" ]; then open -a "Google Chrome" "$URL"; else open "$URL"; fi
+  if [ ! -d "$CHROME" ]; then open "$URL"; return; fi
+  # Already showing: don't start a second face that would also be listening.
+  face_open && return 0
+  allow_mic
+  open -na "$CHROME" --args \
+    --user-data-dir="$PROFILE" \
+    --app="$URL/?auto=1" \
+    --autoplay-policy=no-user-gesture-required \
+    --no-first-run --no-default-browser-check \
+    --window-size=1440,900
+}
+
+close_face() {
+  pkill -f -- "--user-data-dir=$PROFILE" 2>/dev/null || true
 }
 
 start() {
@@ -95,6 +130,7 @@ stop() {
     pids=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null)
     [ -n "$pids" ] && kill -TERM $pids 2>/dev/null
   done
+  close_face
   restore_mic
   notify "JARVIS is off."
 }
