@@ -7,7 +7,8 @@
 #
 # Used by the "Jarvis" and "Stop Jarvis" apps that scripts/make-apps.sh builds.
 # Logs go to ~/.jarvis/logs/jarvis.log. Set JARVIS_WRITES=1 to start it with
-# real actions allowed (same as `npm start -- --writes`).
+# full computer control (same as `npm start -- --writes`), either in the
+# environment or in ~/.jarvis/launch.env, which is read on every start.
 
 set -u
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,6 +17,20 @@ PIDFILE="$STATE/jarvis.pid"
 LOG="$STATE/logs/jarvis.log"
 URL="http://localhost:5173"
 mkdir -p "$STATE/logs"
+# shellcheck disable=SC1091
+[ -f "$STATE/launch.env" ] && . "$STATE/launch.env"
+
+# "Mute me" turns the Mac's microphone down to zero. Starting or stopping
+# JARVIS always puts it back, so it can never be left muted by accident.
+restore_mic() {
+  local f="$STATE/state/mic.json"
+  [ -f "$f" ] || return 0
+  grep -q '"muted": true' "$f" || return 0
+  local level
+  level=$(sed -n 's/.*"level": *\([0-9][0-9]*\).*/\1/p' "$f")
+  osascript -e "set volume input volume ${level:-60}" >/dev/null 2>&1 &&
+    printf '{\n  "muted": false,\n  "level": %s\n}\n' "${level:-60}" >"$f"
+}
 
 # Apps launched from Finder or Siri get a bare PATH, so find Node ourselves.
 if ! command -v node >/dev/null 2>&1; then
@@ -37,6 +52,7 @@ open_face() {
 }
 
 start() {
+  restore_mic
   if running; then
     open_face
     return 0
@@ -79,6 +95,7 @@ stop() {
     pids=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null)
     [ -n "$pids" ] && kill -TERM $pids 2>/dev/null
   done
+  restore_mic
   notify "JARVIS is off."
 }
 

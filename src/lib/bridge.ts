@@ -36,6 +36,7 @@ type Frame = {
   when?: string
   kind?: string
   label?: string
+  muted?: boolean
   servers?: Array<string | { name?: string }>
 }
 
@@ -106,6 +107,21 @@ export function watchUi(fn: (op: string, args: any) => void) {
  *  the bridge's clock pushes it whenever it is due. */
 export type Announcement = { text: string; kind?: string; label?: string }
 let onAnnounce: ((a: Announcement) => void) | null = null
+
+/** JARVIS asked to sleep or shut down, or muted/unmuted the microphone. */
+let onPower: ((mode: string) => void) | null = null
+export function watchPower(fn: (mode: string) => void) {
+  onPower = fn
+}
+let onMic: ((muted: boolean) => void) | null = null
+export function watchMic(fn: (muted: boolean) => void) {
+  onMic = fn
+}
+
+/** A control message with no turn attached: 'shutdown', 'unmute'. */
+export function control(type: 'shutdown' | 'unmute'): void {
+  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type }))
+}
 export function watchAnnounce(fn: (a: Announcement) => void) {
   onAnnounce = fn
 }
@@ -217,6 +233,10 @@ function dispatch(ws: WebSocket) {
       // A `ui` frame with no args is normal — reset and clear take none — so an
       // absent args object is an empty one, not a reason to drop the command.
       onUi?.(msg.op, (msg.args ?? {}) as Record<string, unknown>)
+    } else if (msg.type === 'power' && msg.mode) {
+      onPower?.(msg.mode)
+    } else if (msg.type === 'mic') {
+      onMic?.(Boolean(msg.muted))
     } else if (msg.type === 'announce' && msg.text) {
       onAnnounce?.({ text: msg.text, kind: msg.kind, label: msg.label })
     }

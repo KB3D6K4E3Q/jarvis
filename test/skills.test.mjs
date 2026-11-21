@@ -58,3 +58,14 @@ test('custom skills folder is seeded and read into the prompt', () => {
   assert.doesNotMatch(prompt, /HOW-TO/)
   assert.equal(customSkillsPrompt(join(dir, 'missing')), '')
 })
+
+test('siteUrl understands names, domains and URLs, and nothing else', async () => {
+  const { siteUrl } = await import('../bridge/skills.mjs')
+  assert.equal(siteUrl('YouTube'), 'https://www.youtube.com')
+  assert.equal(siteUrl('netflix.com'), 'https://www.netflix.com')
+  assert.equal(siteUrl('bbc.co.uk'), 'https://bbc.co.uk/')
+  assert.equal(siteUrl('https://example.com/a?b=1'), 'https://example.com/a?b=1')
+  assert.equal(siteUrl('file:///etc/passwd'), null)
+  assert.equal(siteUrl('javascript:alert(1)'), null)
+  assert.equal(siteUrl('some random words'), null)
+})

@@ -21,7 +21,9 @@ import { displayServer } from './panels.mjs'
 import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
-import { customSkillsPrompt, onAnnounce, PROMPT_SKILLS, seedSkills, skillsServer } from './skills.mjs'
+import { customSkillsPrompt, onAnnounce, PROMPT_SKILLS, seedSkills, skillsServer, unmuteMic } from './skills.mjs'
+import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { homedir, tmpdir } from 'node:os'
 import { mkdirSync, readFileSync, realpathSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
@@ -298,6 +300,23 @@ const SKILLS_DIR = resolvePath(
   process.env.JARVIS_SKILLS_DIR ?? join(homedir(), '.jarvis', 'skills'),
 )
 seedSkills(SKILLS_DIR)
+
+/**
+ * "Shut down": stop the brain and the face together, the same way the Stop
+ * Jarvis app does. Detached, because it ends this very process.
+ */
+let shuttingDown = false
+function shutdownJarvis() {
+  if (shuttingDown) return
+  shuttingDown = true
+  console.log('[jarvis] shutting down on request')
+  const script = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'scripts', 'jarvis.sh')
+  try {
+    spawn('/bin/bash', [script, 'stop'], { detached: true, stdio: 'ignore' }).unref()
+  } catch {}
+  // If the script could not run, at least this process goes.
+  setTimeout(() => process.exit(0), 4000).unref()
+}
 
 const TOOL_ROOTS = fileRoots({
   workspace: WORKSPACE,
@@ -1340,7 +1359,20 @@ wss.on('connection', (socket) => {
         // per connection like the rest; timers are shared across connections.
         ...(DISABLED.has('skills')
           ? {}
-          : { jarvis_skills: skillsServer({ stateDir: SKILLS_STATE, disabled: DISABLED }) }),
+          : {
+              jarvis_skills: skillsServer({
+                stateDir: SKILLS_STATE,
+                disabled: DISABLED,
+                allowWrites: ALLOW_WRITES,
+                // Both go to the face, which acts once his goodbye is spoken.
+                power: (mode) => {
+                  send({ type: 'power', mode })
+                  // A face that never reports back must not leave him running.
+                  if (mode === 'shutdown') setTimeout(shutdownJarvis, 30_000).unref()
+                },
+                mic: (muted) => send({ type: 'mic', muted }),
+              }),
+            }),
       },
       // A plain system prompt, not the claude_code preset. The preset is
       // tuned for a coding agent — verbose, file-oriented, and a large chunk
@@ -1562,6 +1594,16 @@ wss.on('connection', (socket) => {
     try {
       msg = JSON.parse(raw.toString())
     } catch {
+      return
+    }
+
+    // The face has finished his goodbye.
+    if (msg.type === 'shutdown') return shutdownJarvis()
+    // M pressed on the screen while the microphone is muted.
+    if (msg.type === 'unmute') {
+      unmuteMic()
+        .then(() => send({ type: 'mic', muted: false }))
+        .catch((err) => console.warn(`[jarvis] unmute failed: ${err.message}`))
       return
     }
 

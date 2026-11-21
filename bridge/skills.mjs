@@ -612,6 +612,357 @@ function weatherTools(stateDir) {
 }
 
 // ---------------------------------------------------------------------------
+// Power and the microphone — JARVIS turning himself off, muting the user
+// ---------------------------------------------------------------------------
+
+let micStateDir = null
+const micFile = () => join(micStateDir, 'mic.json')
+
+/** Mute the Mac's microphone, remembering the level to put back. */
+export async function muteMic() {
+  const level = Number(await osa(['input volume of (get volume settings)'])) || 0
+  const saved = readJson(micFile(), {})
+  writeJson(micFile(), { muted: true, level: level > 0 ? level : saved.level || 60 })
+  await osa(['set volume input volume 0'])
+}
+
+/** Put the microphone back where it was. Safe to call when it isn't muted. */
+export async function unmuteMic() {
+  if (!micStateDir) return false
+  const saved = readJson(micFile(), {})
+  if (!saved.muted) return false
+  const level = Math.round(Math.min(100, Math.max(1, Number(saved.level) || 60)))
+  await osa(['on run argv', 'set volume input volume (item 1 of argv as integer)', 'end run'], [String(level)])
+  writeJson(micFile(), { muted: false, level })
+  return true
+}
+
+function powerTools({ power, mic }) {
+  const tools = [
+    tool(
+      'jarvis_power',
+      'Turn yourself off. mode "sleep" (go to sleep, stand by, be quiet, that is all) closes your ears until they say "Hey Jarvis" again. ' +
+        'mode "shutdown" (shut down, turn yourself off, quit, power off) fully quits JARVIS; they restart it with the Jarvis app or "Hey Siri, open Jarvis". ' +
+        'Say your one-line goodbye in the same turn; it is spoken before you go.',
+      { mode: z.enum(['sleep', 'shutdown']).catch('sleep') },
+      async ({ mode }) => {
+        power?.(mode)
+        return ok(mode === 'shutdown' ? 'Shutting down after this answer.' : 'Going to sleep after this answer.')
+      },
+    ),
+  ]
+  if (IS_MAC) {
+    tools.push(
+      tool(
+        'mic_mute',
+        '"Mute me" / "unmute me": mute or unmute the Mac\'s microphone for every app. While muted you cannot hear them at all, ' +
+          'so tell them how to unmute: press M on your screen, or open the Jarvis app ("Hey Siri, open Jarvis").',
+        { mute: z.union([z.boolean(), z.string()]).catch(true).describe('true to mute, false to unmute.') },
+        async ({ mute }) => {
+          const on = mute === true || /^(true|yes|on|1|mute)$/i.test(String(mute))
+          try {
+            if (on) await muteMic()
+            else await unmuteMic()
+          } catch (err) {
+            return fail(`Couldn't change the microphone: ${err.message}`)
+          }
+          mic?.(on)
+          return ok(on ? 'Microphone muted. Unmute: press M on the JARVIS screen, or open the Jarvis app.' : 'Microphone back on.')
+        },
+      ),
+    )
+  }
+  return tools
+}
+
+// ---------------------------------------------------------------------------
+// Mac settings
+// ---------------------------------------------------------------------------
+
+const onOff = (v) =>
+  z.union([z.boolean(), z.string()]).optional().catch(undefined).describe(v)
+
+function wantOn(value, current) {
+  if (value === undefined || value === null || value === '') return undefined
+  const s = String(value).trim().toLowerCase()
+  if (s === 'toggle') return !current
+  return value === true || /^(true|yes|on|1|enable|dark)$/.test(s)
+}
+
+function settingsTools({ allowWrites }) {
+  if (!IS_MAC) return []
+  const tools = [
+    tool(
+      'mac_dark_mode',
+      'Switch the Mac between dark and light mode, toggle it, or report which it is in.',
+      { dark: onOff('true for dark, false for light, "toggle". Empty just reports.') },
+      async ({ dark }) => {
+        const script = (body) => ['tell application "System Events"', 'tell appearance preferences', ...body, 'end tell', 'end tell']
+        // Reading needs no permission; changing it goes through System Events.
+        const isDark = async () => {
+          try {
+            return /dark/i.test((await run('defaults', ['read', '-g', 'AppleInterfaceStyle'], { timeout: 5000 })).stdout)
+          } catch {
+            return false // the key is absent in light mode
+          }
+        }
+        const now = await isDark()
+        const want = wantOn(dark, now)
+        if (want === undefined || want === now) return ok(`${now ? 'Dark' : 'Light'} mode.`)
+        try {
+          await osa(script([`set dark mode to ${want}`]))
+        } catch (err) {
+          return fail(
+            `macOS hasn't let JARVIS change the appearance yet. Allow it once in System Settings → Privacy & Security → Automation (System Events). ${err.message}`,
+          )
+        }
+        return ok(`${(await isDark()) ? 'Dark' : 'Light'} mode.`)
+      },
+    ),
+    tool(
+      'mac_wifi',
+      'Turn Wi-Fi on or off, or report its state. Warn first that turning it off also cuts JARVIS off from Claude, so he cannot answer again until it is back on.',
+      { on: onOff('true to turn on, false to turn off. Empty reports.') },
+      async ({ on }) => {
+        const { stdout } = await run('networksetup', ['-listallhardwareports'], { timeout: 5000 })
+        const dev = stdout.match(/Hardware Port: Wi-Fi\nDevice: (\S+)/)?.[1] ?? 'en0'
+        const state = async () => /On$/.test((await run('networksetup', ['-getairportpower', dev], { timeout: 5000 })).stdout.trim())
+        const now = await state()
+        const want = wantOn(on, now)
+        if (want !== undefined && want !== now) {
+          await run('networksetup', ['-setairportpower', dev, want ? 'on' : 'off'], { timeout: 8000 })
+        }
+        return ok(`Wi-Fi is ${(await state()) ? 'on' : 'off'}.`)
+      },
+    ),
+    tool(
+      'mac_sleep',
+      'Put the whole Mac to sleep. Only when they clearly ask for the computer (not you) to sleep.',
+      {},
+      async () => {
+        setTimeout(() => run('pmset', ['sleepnow']).catch(() => {}), 4000).unref?.()
+        return ok('The Mac will sleep in a few seconds.')
+      },
+    ),
+    tool(
+      'mac_shortcuts_list',
+      'List the user\'s Shortcuts (from the Shortcuts app). They can make shortcuts for anything JARVIS has no tool for — Do Not Disturb, brightness, Bluetooth, smart-home — and you run them with mac_shortcut_run.',
+      {},
+      async () => {
+        const { stdout } = await run('shortcuts', ['list'], { timeout: 10000 })
+        const names = stdout.split('\n').map((l) => l.trim()).filter(Boolean)
+        return ok(names.length ? names.join('\n') : 'No shortcuts yet.')
+      },
+    ),
+  ]
+  if (allowWrites) {
+    tools.push(
+      tool(
+        'mac_shortcut_run',
+        'Run one of the user\'s Shortcuts by its exact name (see mac_shortcuts_list), optionally with text input.',
+        { name: z.string(), input: looseText('Text to pass in. Optional.') },
+        async ({ name, input }) => {
+          const { stdout } = await run('shortcuts', ['list'], { timeout: 10000 })
+          const names = stdout.split('\n').map((l) => l.trim()).filter(Boolean)
+          const match = names.find((n) => n.toLowerCase() === String(name).trim().toLowerCase()) ?? names.find((n) => norm(n).includes(norm(name)))
+          if (!match) return fail(`No shortcut called "${name}".`)
+          const args = ['run', match]
+          let tmp = null
+          if (input) {
+            tmp = join(micStateDir ?? homedir(), 'shortcut-input.txt')
+            writeFileSync(tmp, String(input))
+            args.push('--input-path', tmp)
+          }
+          const out = await run('shortcuts', args, { timeout: 60000 })
+          return ok(`Ran "${match}".${out.stdout.trim() ? ` Output: ${out.stdout.trim().slice(0, 500)}` : ''}`)
+        },
+      ),
+    )
+  }
+  return tools
+}
+
+// ---------------------------------------------------------------------------
+// Websites and files
+// ---------------------------------------------------------------------------
+
+const SITES = {
+  youtube: 'https://www.youtube.com', google: 'https://www.google.com', gmail: 'https://mail.google.com',
+  netflix: 'https://www.netflix.com', spotify: 'https://open.spotify.com', maps: 'https://maps.google.com',
+  wikipedia: 'https://www.wikipedia.org', github: 'https://github.com', chatgpt: 'https://chatgpt.com',
+  claude: 'https://claude.ai', facebook: 'https://www.facebook.com', instagram: 'https://www.instagram.com',
+  x: 'https://x.com', twitter: 'https://x.com', reddit: 'https://www.reddit.com', amazon: 'https://www.amazon.com',
+  calendar: 'https://calendar.google.com', drive: 'https://drive.google.com', translate: 'https://translate.google.com',
+}
+
+const SEARCH = {
+  google: 'https://www.google.com/search?q=',
+  youtube: 'https://www.youtube.com/results?search_query=',
+  maps: 'https://www.google.com/maps/search/',
+  wikipedia: 'https://en.wikipedia.org/w/index.php?search=',
+  amazon: 'https://www.amazon.com/s?k=',
+  images: 'https://www.google.com/search?tbm=isch&q=',
+}
+
+/** A site name, a bare domain or a full URL, to an https URL — or null. */
+export function siteUrl(input) {
+  const s = String(input ?? '').trim()
+  if (!s) return null
+  const known = SITES[s.toLowerCase().replace(/\s+|\.com$/g, '')]
+  if (known) return known
+  const withScheme = /^[a-z]+:\/\//i.test(s) ? s : /^[\w-]+(\.[\w-]+)+(\/\S*)?$/.test(s) ? `https://${s}` : null
+  if (!withScheme) return null
+  try {
+    const u = new URL(withScheme)
+    return u.protocol === 'https:' || u.protocol === 'http:' ? u.href : null
+  } catch {
+    return null
+  }
+}
+
+async function openInBrowser(url) {
+  const chrome = '/Applications/Google Chrome.app'
+  await run('open', existsSync(chrome) ? ['-a', chrome, url] : [url], { timeout: 8000 })
+}
+
+const FOLDERS = {
+  home: '', downloads: 'Downloads', documents: 'Documents', desktop: 'Desktop', pictures: 'Pictures',
+  photos: 'Pictures', music: 'Music', movies: 'Movies', videos: 'Movies', applications: 'Applications',
+}
+
+function webFileTools() {
+  if (!IS_MAC) return []
+  return [
+    tool(
+      'open_website',
+      'Open a website in Chrome: a name ("youtube", "gmail"), a domain ("bbc.co.uk") or a full URL. Or search a site: give search plus on (google, youtube, maps, wikipedia, amazon, images).',
+      {
+        site: looseText('Site name, domain or URL.'),
+        search: looseText('What to search for.'),
+        on: looseText('Where to search. Default google.'),
+      },
+      async ({ site, search, on }) => {
+        let url = null
+        if (search) {
+          const where = String(on ?? site ?? 'google').toLowerCase().replace(/\.com$/, '')
+          url = (SEARCH[where] ?? SEARCH.google) + encodeURIComponent(search)
+        } else url = siteUrl(site)
+        if (!url) return fail(`I don't know a site called "${site}". Give a domain, or search instead.`)
+        await openInBrowser(url)
+        return ok(`Opened ${new URL(url).hostname}${search ? ` (search: ${search})` : ''}.`)
+      },
+    ),
+    tool(
+      'open_folder',
+      'Show a folder in Finder: downloads, documents, desktop, pictures, music, movies, applications, home — or a path inside the home folder.',
+      { folder: z.string() },
+      async ({ folder }) => {
+        const key = String(folder).trim().toLowerCase().replace(/^my\s+|\s+folder$/g, '')
+        const rel = FOLDERS[key]
+        const path = rel !== undefined ? join(homedir(), rel) : String(folder).replace(/^~(?=\/|$)/, homedir())
+        if (!path.startsWith(homedir()) || !existsSync(path)) return fail(`No folder "${folder}" in your home folder.`)
+        await run('open', [path], { timeout: 8000 })
+        return ok(`Opened ${basename(path) || 'your home folder'}.`)
+      },
+    ),
+    tool(
+      'take_screenshot',
+      'Take a screenshot of the whole screen and save it to the Desktop. Only when asked.',
+      {},
+      async () => {
+        const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19)
+        const file = join(homedir(), 'Desktop', `JARVIS Screenshot ${stamp}.png`)
+        await run('screencapture', ['-x', file], { timeout: 15000 })
+        return existsSync(file) ? ok('Screenshot saved to the Desktop.') : fail('macOS did not allow the screenshot (Screen Recording permission).')
+      },
+    ),
+  ]
+}
+
+// ---------------------------------------------------------------------------
+// Write and send — drafts only; the user always presses Send themselves
+// ---------------------------------------------------------------------------
+
+/** Apps JARVIS will not type into: a typed line there is a command run. */
+const NO_TYPING = /terminal|iterm|warp|alacritty|kitty|hyper|ghostty|console|script editor|keychain|system settings|claude/i
+
+function writeTools({ allowWrites }) {
+  if (!IS_MAC) return []
+  const pb = (text) =>
+    new Promise((resolve, reject) => {
+      const child = execFile('pbcopy', [], (err) => (err ? reject(err) : resolve()))
+      child.stdin.end(String(text))
+    })
+  const tools = [
+    tool(
+      'clipboard_copy',
+      'Put text on the clipboard so they can paste it anywhere.',
+      { text: z.string() },
+      async ({ text }) => {
+        await pb(text)
+        return ok('Copied to the clipboard.')
+      },
+    ),
+    tool(
+      'clipboard_read',
+      'Read what is on the clipboard right now (to summarise, translate or fix it). Only when they ask about their clipboard.',
+      {},
+      async () => {
+        const { stdout } = await run('pbpaste', [], { timeout: 5000 })
+        return ok(stdout ? stdout.slice(0, 4000) : 'The clipboard is empty.')
+      },
+    ),
+    tool(
+      'email_draft',
+      'Open a new email in their mail app, filled in, for them to check and send. You never send it.',
+      { to: looseText('Address, if known.'), subject: looseText('Subject.'), body: looseText('Body text.') },
+      async ({ to, subject, body }) => {
+        const q = new URLSearchParams()
+        if (subject) q.set('subject', subject)
+        if (body) q.set('body', body)
+        const url = `mailto:${encodeURIComponent(to ?? '').replace(/%40/g, '@')}?${q.toString().replace(/\+/g, '%20')}`
+        await run('open', [url], { timeout: 8000 })
+        return ok('Draft is open. They press Send.')
+      },
+    ),
+    tool(
+      'message_draft',
+      'Start an iMessage/text: opens Messages (to a number or address if given) with the text on the clipboard, ready to paste and send. You never send it.',
+      { to: looseText('Phone number or address, if known.'), text: z.string() },
+      async ({ to, text }) => {
+        await pb(text)
+        const addr = String(to ?? '').replace(/[^\w@.+-]/g, '')
+        await run('open', [addr ? `sms:${addr}` : '-a', ...(addr ? [] : ['Messages'])], { timeout: 8000 })
+        return ok('Messages is open and the text is on the clipboard — paste with Command-V, then send.')
+      },
+    ),
+  ]
+  if (allowWrites) {
+    tools.push(
+      tool(
+        'type_text',
+        'Type text into whatever app and text field is in front, as if from the keyboard. Refused in terminals and settings.',
+        { text: z.string(), press_return: z.union([z.boolean(), z.string()]).optional().catch(false) },
+        async ({ text, press_return }) => {
+          let front = ''
+          try {
+            front = await osa(['tell application "System Events" to get name of first application process whose frontmost is true'])
+          } catch (err) {
+            return fail(`macOS has not allowed JARVIS to control the keyboard yet. Turn it on in System Settings → Privacy & Security → Accessibility (and Automation). ${err.message}`)
+          }
+          if (NO_TYPING.test(front)) return fail(`Not typing into ${front}: text there could run as a command.`)
+          await pb(text)
+          const enter = press_return === true || /^(true|yes|1)$/i.test(String(press_return))
+          await osa(['tell application "System Events"', 'keystroke "v" using command down', ...(enter ? ['delay 0.2', 'key code 36'] : []), 'end tell'])
+          return ok(`Typed into ${front}.`)
+        },
+      ),
+    )
+  }
+  return tools
+}
+
+// ---------------------------------------------------------------------------
 // The server
 // ---------------------------------------------------------------------------
 
@@ -629,10 +980,11 @@ function clockTool() {
  * live; `disabled` is the JARVIS_DISABLE set, honouring mac / timers / memory /
  * weather.
  */
-export function skillsServer({ stateDir, disabled = new Set() }) {
+export function skillsServer({ stateDir, disabled = new Set(), allowWrites = false, power, mic }) {
   mkdirSync(stateDir, { recursive: true })
-  const tools = [clockTool()]
-  if (!disabled.has('mac')) tools.push(...macTools())
+  micStateDir = stateDir
+  const tools = [clockTool(), ...powerTools({ power, mic })]
+  if (!disabled.has('mac')) tools.push(...macTools(), ...settingsTools({ allowWrites }), ...webFileTools(), ...writeTools({ allowWrites }))
   if (!disabled.has('timers')) {
     startTimers(stateDir)
     tools.push(...timerTools())
@@ -654,6 +1006,13 @@ export const PROMPT_SKILLS = `Your everyday skills (the jarvis_skills tools):
 - Weather: lead with what matters ("Cold and wet, eight degrees"), not every number.
   If no home city is set, ask once and save it with weather_set_home.
 - Daily brief: call daily_brief, then give it in three or four short sentences.
+- "Go to sleep" / "that's all": jarvis_power sleep. "Shut down" / "turn yourself
+  off": jarvis_power shutdown. Either way one short goodbye, nothing more.
+- "Mute me": mic_mute, then tell them once how to unmute (press M on the screen).
+- Websites, folders, screenshots, dark mode, Wi-Fi: just do it and confirm.
+- Anything else on the Mac: check mac_shortcuts_list; their own Shortcuts may do it.
+- Writing: email_draft and message_draft only prepare it. Never claim you sent
+  anything. Read the draft's gist back in one sentence.
 
 `
 

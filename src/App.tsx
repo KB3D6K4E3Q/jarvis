@@ -25,6 +25,9 @@ import {
   watchCapture,
   watchUi,
   watchAnnounce,
+  watchPower,
+  watchMic,
+  control,
   watchConnection,
   connectedLabels,
   usingBridge,
@@ -75,6 +78,9 @@ export default function App() {
   const phase = useStore((s) => s.phase)
   const history = useRef<Msg[]>([])
   const speaker = useRef<ReturnType<typeof createSpeaker> | null>(null)
+  /** Set by "go to sleep" / "shut down" mid-turn; acted on once he has finished speaking. */
+  const pendingPower = useRef<string | null>(null)
+  const micMuted = useRef(false)
   const voice = useRef<Voice | null>(null)
 
   /**
@@ -212,9 +218,20 @@ export default function App() {
         music.duck(false)
         store.getState().setActiveTool(null)
         music.working(false)
-        // Stay open. Having to say his name again to add one more sentence is
-        // the difference between a conversation and a vending machine.
-        listen(FOLLOW_UP_MS)
+        const power = pendingPower.current
+        pendingPower.current = null
+        if (power) {
+          goDormant()
+          if (power === 'shutdown') {
+            store.getState().setPhase('offline')
+            store.getState().setError('JARVIS is shut down. Start him again with the Jarvis app or "Hey Siri, open Jarvis".')
+            control('shutdown')
+          }
+        } else {
+          // Stay open. Having to say his name again to add one more sentence is
+          // the difference between a conversation and a vending machine.
+          listen(FOLLOW_UP_MS)
+        }
       }
     }
   }
@@ -365,6 +382,16 @@ export default function App() {
     watchServers((servers) => store.getState().setConnected(servers))
     watchPanels((panel) => store.getState().pushPanel(panel))
     watchBlades((blade) => store.getState().pushBlade(blade))
+
+    // "Go to sleep" / "shut down": wait for the goodbye, then act (see respond).
+    watchPower((mode) => {
+      pendingPower.current = mode === 'shutdown' ? 'shutdown' : 'sleep'
+    })
+    // "Mute me": the Mac's microphone is off, so he can't hear the wake word.
+    watchMic((muted) => {
+      micMuted.current = muted
+      store.getState().setError(muted ? 'Microphone muted — press M to unmute.' : null)
+    })
 
     // A timer or reminder is due. Spoken whatever he is doing — dormant
     // included, since a reminder that waits for the wake word is no reminder.
@@ -671,6 +698,13 @@ export default function App() {
             )
           }
         })
+        return
+      }
+
+      // M unmutes the microphone after "mute me" — he can't hear you ask.
+      if ((e.key === 'm' || e.key === 'M') && micMuted.current) {
+        e.preventDefault()
+        control('unmute')
         return
       }
 

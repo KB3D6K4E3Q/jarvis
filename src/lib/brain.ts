@@ -65,6 +65,17 @@ export function watchBlades(fn: (blade: Blade) => void): void {
  * server to volunteer anything. On that backend this watcher simply never
  * fires and the interface stays exactly as it ships.
  */
+/** Power and microphone control — only the bridge can do either. */
+export function watchPower(fn: (mode: string) => void): void {
+  if (usingBridge) bridge.watchPower(fn)
+}
+export function watchMic(fn: (muted: boolean) => void): void {
+  if (usingBridge) bridge.watchMic(fn)
+}
+export function control(type: 'shutdown' | 'unmute'): void {
+  if (usingBridge) bridge.control(type)
+}
+
 /** Timers and reminders firing. Only the bridge has a clock to fire them. */
 export function watchAnnounce(fn: (a: bridge.Announcement) => void): void {
   if (usingBridge) bridge.watchAnnounce(fn)
