@@ -18,7 +18,8 @@ LOG="$STATE/logs/jarvis.log"
 URL="http://localhost:5173"
 mkdir -p "$STATE/logs"
 # shellcheck disable=SC1091
-[ -f "$STATE/launch.env" ] && . "$STATE/launch.env"
+# Exported, so settings like ELEVENLABS_API_KEY and JARVIS_VOICE_ID reach JARVIS.
+if [ -f "$STATE/launch.env" ]; then set -a; . "$STATE/launch.env"; set +a; fi
 
 # "Mute me" turns the Mac's microphone down to zero. Starting or stopping
 # JARVIS always puts it back, so it can never be left muted by accident.
