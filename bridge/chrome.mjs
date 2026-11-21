@@ -100,6 +100,60 @@ async function findSocket() {
   return (await findUnixSocket()) ?? ((await wslPipeAvailable()) ? WSL_PIPE : null)
 }
 
+/**
+ * The extension's socket only exists while the user's own Chrome is running.
+ * On a Mac, if Chrome is closed, start it — in the background and with no
+ * window, so nothing pops up — and give the extension a moment to connect.
+ *
+ * Only the user's normal Chrome counts: the JARVIS face runs in a Chrome of
+ * its own (--user-data-dir), which has no extension and must not be mistaken
+ * for it. JARVIS_CHROME_AUTOSTART=0 turns this off.
+ */
+const CHROME_APP = '/Applications/Google Chrome.app'
+let launching = null
+
+function mainChromeRunning() {
+  return new Promise((resolve) => {
+    const ps = spawn('ps', ['-axo', 'args='], { stdio: ['ignore', 'pipe', 'ignore'] })
+    let out = ''
+    ps.stdout.on('data', (d) => (out += d))
+    ps.on('close', () =>
+      resolve(
+        out
+          .split('\n')
+          .some((l) => l.includes('Google Chrome.app/Contents/MacOS/Google Chrome') && !/--user-data-dir=|--type=/.test(l)),
+      ),
+    )
+    ps.on('error', () => resolve(false))
+  })
+}
+
+export async function findOrLaunchSocket(waitMs = 15_000) {
+  const found = await findSocket()
+  if (found) return found
+  if (process.platform !== 'darwin' || process.env.JARVIS_CHROME_AUTOSTART === '0' || !existsSync(CHROME_APP)) return null
+  launching ??= (async () => {
+    if (!(await mainChromeRunning())) {
+      console.log('[jarvis] starting Chrome in the background for the Claude extension')
+      await new Promise((resolve) => {
+        const p = spawn('open', ['-g', '-na', CHROME_APP, '--args', '--no-startup-window'], { stdio: 'ignore' })
+        p.on('close', resolve)
+        p.on('error', resolve)
+      })
+    }
+    const until = Date.now() + waitMs
+    while (Date.now() < until) {
+      const path = await findSocket()
+      if (path) return path
+      await new Promise((r) => setTimeout(r, 500))
+    }
+    return null
+  })().finally(() => {
+    launching = null
+  })
+  return launching
+}
+
 async function findUnixSocket() {
   let names
   try {
@@ -193,11 +247,11 @@ class ChromeLink {
 
   async ensureConnected() {
     if (this.socket && !this.socket.destroyed) return
-    const path = await findSocket()
+    const path = await findOrLaunchSocket()
     if (!path) {
       throw new Error(
-        'The Claude browser extension is not running on this machine. ' +
-          'Open Chrome with the Claude extension enabled, then try again.',
+        'Chrome is open but the Claude extension is not connected. ' +
+          'Check that the extension is enabled and signed in, then try again.',
       )
     }
     await new Promise((resolve, reject) => {
@@ -697,15 +751,15 @@ export function chromeServer({ allowWrites }) {
         'the user whether the problem is the browser or the page.',
       {},
       async () => {
-        const path = await findSocket()
+        const path = await findOrLaunchSocket()
         if (!path) {
           return {
             content: [
               {
                 type: 'text',
                 text:
-                  'The browser extension is not running. Chrome may be closed, ' +
-                  'or the Claude extension may be disabled.',
+                  'Chrome is running but the Claude extension did not connect. ' +
+                  'It may be disabled or signed out.',
               },
             ],
           }

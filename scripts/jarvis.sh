@@ -74,6 +74,12 @@ open_face() {
   # Already showing: don't start a second face that would also be listening.
   face_open && return 0
   allow_mic
+  # Your normal Chrome, where the Claude extension lives, so JARVIS can use the
+  # browser from the first question. Started hidden, with no window.
+  if ! ps -axo args= | grep -F "Google Chrome.app/Contents/MacOS/Google Chrome" | grep -vqE -- "--user-data-dir=|--type=|grep"; then
+    open -g -na "$CHROME" --args --no-startup-window
+    sleep 2
+  fi
   open -na "$CHROME" --args \
     --user-data-dir="$PROFILE" \
     --app="$URL/?auto=1" \
