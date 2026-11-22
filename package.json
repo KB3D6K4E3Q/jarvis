@@ -20,7 +20,9 @@
     "setup": "node scripts/setup.mjs",
     "apps": "bash scripts/make-apps.sh",
     "autostart:on": "bash scripts/autostart.sh on",
-    "autostart:off": "bash scripts/autostart.sh off"
+    "autostart:off": "bash scripts/autostart.sh off",
+    "clap:on": "bash scripts/clap.sh on",
+    "clap:off": "bash scripts/clap.sh off"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.220",
