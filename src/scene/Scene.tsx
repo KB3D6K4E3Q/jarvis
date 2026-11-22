@@ -12,7 +12,17 @@ import * as THREE from 'three'
 import { Core } from './Core'
 import { Particles } from './Particles'
 import { Orbits } from './Orbits'
+import { Starfield } from './Starfield'
 import { useStore, phaseColor, accentFor, type Phase } from '../store'
+import { dive, follow, stages, cameraZ, type DiveStages } from '../lib/dive'
+
+/** The warm centre the dust leans toward as it gathers into rings. */
+const DIVE_WARM = new THREE.Color('#ffc978')
+/** How far toward DIVE_WARM the dust goes once the rings have formed. */
+const DIVE_WARM_MIX = 0.55
+/** Handheld camera drift at rest; it settles as the dive deepens. */
+const DRIFT_X = 0.35
+const DRIFT_Y = 0.22
 
 /** Rings spin harder while JARVIS is working — reads as effort. */
 const spinFor: Record<Phase, number> = {
@@ -84,6 +94,10 @@ export type Drive = {
     style: number
     visible: boolean
   }
+  /** The scroll dive, eased. All zero at rest — see src/lib/dive.ts. */
+  dive: DiveStages
+  /** Dust colour: the phase colour, warmed as the rings form. */
+  dust: THREE.Color
 }
 
 /**
@@ -122,6 +136,8 @@ function Rig() {
         style: STYLE_INDEX.ring,
         visible: true,
       },
+      dive: stages(0),
+      dust: new THREE.Color(phaseColor.offline),
     }),
     [],
   )
@@ -169,10 +185,20 @@ function Rig() {
     const want = Math.max(level, breathe)
     drive.level += (want - drive.level) * Math.min(1, dt * 9)
 
-    // Slow drift on the camera keeps handheld-ish life in the shot.
+    // Waking JARVIS pulls the camera back out so the reactor is in frame for
+    // the conversation.
+    if (phase === 'waking') dive.target = 0
+    dive.depth = follow(dive.depth, dive.target, Math.min(dt, 0.1))
+    drive.dive = stages(dive.depth)
+    drive.dust.copy(drive.color).lerp(DIVE_WARM, drive.dive.rings * DIVE_WARM_MIX)
+
+    // Slow drift on the camera keeps handheld-ish life in the shot. It calms
+    // as the camera goes in, where the same sway would read as shake.
     const t = state.clock.elapsedTime
-    state.camera.position.x = Math.sin(t * 0.13) * 0.35
-    state.camera.position.y = Math.cos(t * 0.17) * 0.22
+    const sway = 1 - drive.dive.through * 0.7
+    state.camera.position.x = Math.sin(t * 0.13) * DRIFT_X * sway
+    state.camera.position.y = Math.cos(t * 0.17) * DRIFT_Y * sway
+    state.camera.position.z = cameraZ(dive.depth)
     state.camera.lookAt(0, 0, 0)
   })
 
@@ -185,6 +211,7 @@ function Rig() {
   // subject is one unbroken one.
   return (
     <>
+      <Starfield drive={drive} />
       <Core drive={drive} />
       <Particles drive={drive} />
       <Orbits />

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { Scene } from './scene/Scene'
 import { Hud } from './ui/Hud'
+import { Dive } from './ui/Dive'
 import { Boot } from './ui/Boot'
 import { Ignition } from './ui/Ignition'
 import { Diagnostics } from './ui/Diagnostics'
@@ -810,6 +811,7 @@ export default function App() {
   return (
     <>
       <Scene />
+      <Dive />
       <Hud />
       <Boot />
       <Diagnostics />

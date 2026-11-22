@@ -2152,3 +2152,39 @@ kbd {
   transform: scaleX(-1);
   background: #000;
 }
+
+/* ---------------------------------------------------------------------------
+   Scroll dive caption
+
+   JARVIS's last reply, decoding word by word as the wheel flies the camera
+   into the reactor (src/ui/Dive.tsx). Top left, clear of the side rails and
+   the conversation log. Words still to come sit dimmed, so the line reads as
+   being uncovered rather than typed.
+   --------------------------------------------------------------------------- */
+
+.dive-caption {
+  position: fixed;
+  top: 17vh;
+  left: 92px;
+  z-index: 3;
+  max-width: min(520px, 40vw);
+  pointer-events: none;
+  font-size: clamp(18px, 2.1vw, 30px);
+  line-height: 1.18;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #eafcff;
+  text-shadow: 0 0 22px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.dive-current {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.9em;
+  color: var(--accent);
+}
+
+.dive-rest {
+  opacity: 0.22;
+  text-shadow: none;
+}

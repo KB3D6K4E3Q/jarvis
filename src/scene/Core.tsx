@@ -261,7 +261,9 @@ export function Core({ drive }: { drive: Drive }) {
     // multiplier rides on the same accumulator for the same reason.
     u.uPhase.value += dt * (0.5 + u.uLevel.value * 0.7) * r.spin
     u.uOpen.value += (drive.open - u.uOpen.value) * Math.min(1, dt * 1.6)
-    u.uIntensity.value = r.intensity
+    // The scroll dive fades the ring so the camera can pass it — the plane is
+    // fixed in world space, and up close it would only be a wash of colour.
+    u.uIntensity.value = r.intensity * (1 - drive.dive.coreFade)
     u.uStyle.value = r.style
     ;(u.uColor.value as THREE.Color).lerp(r.color, Math.min(1, dt * 2.5))
   })
