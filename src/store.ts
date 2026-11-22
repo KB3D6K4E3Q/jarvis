@@ -50,6 +50,8 @@ export type Blade = {
   mode?: 'reader' | 'live'
   size: 'compact' | 'tall' | 'wide' | 'full'
   hold: 'turn' | 'sticky'
+  /** Tucked into the dock at the bottom of the screen, out of the stack. */
+  minimised?: boolean
 }
 
 export type Turn = {
@@ -238,6 +240,8 @@ type State = {
   focusedBlade: string | null
   /** A blade thrown to full screen, or null. */
   expandedBlade: string | null
+  /** Every open blade laid out side by side, to pick one. */
+  bladeOverview: boolean
   /** JARVIS's control over his own appearance. UI_DEFAULTS == the stock look. */
   ui: UiState
 
@@ -252,6 +256,9 @@ type State = {
   clearBlades: () => void
   focusBlade: (id: string | null) => void
   expandBlade: (id: string | null) => void
+  minimiseBlade: (id: string, on: boolean) => void
+  closeAllBlades: () => void
+  setBladeOverview: (on: boolean) => void
   setPhase: (p: Phase) => void
   setLevel: (l: number) => void
   setCaption: (c: string) => void
@@ -285,6 +292,7 @@ export const useStore = create<State>((set) => ({
   blades: [],
   focusedBlade: null,
   expandedBlade: null,
+  bladeOverview: false,
   bootNote: '',
   ui: defaultUi(),
 
@@ -327,11 +335,16 @@ export const useStore = create<State>((set) => ({
       return { blades: next, focusedBlade: blade.id }
     }),
   closeBlade: (id) =>
-    set((s) => ({
-      blades: s.blades.filter((b) => b.id !== id),
-      focusedBlade: s.focusedBlade === id ? null : s.focusedBlade,
-      expandedBlade: s.expandedBlade === id ? null : s.expandedBlade,
-    })),
+    set((s) => {
+      const blades = s.blades.filter((b) => b.id !== id)
+      return {
+        blades,
+        focusedBlade: s.focusedBlade === id ? null : s.focusedBlade,
+        expandedBlade: s.expandedBlade === id ? null : s.expandedBlade,
+        // An overview of one thing is just that thing.
+        bladeOverview: s.bladeOverview && blades.filter((b) => !b.minimised).length > 1,
+      }
+    }),
   // Same contract as panels: 'turn' blades go when the user speaks again,
   // 'sticky' ones stay until something replaces them.
   clearBlades: () =>
@@ -345,7 +358,18 @@ export const useStore = create<State>((set) => ({
       }
     }),
   focusBlade: (focusedBlade) => set({ focusedBlade }),
-  expandBlade: (expandedBlade) => set({ expandedBlade }),
+  expandBlade: (expandedBlade) => set({ expandedBlade, bladeOverview: false }),
+  minimiseBlade: (id, on) =>
+    set((s) => ({
+      blades: s.blades.map((b) => (b.id === id ? { ...b, minimised: on } : b)),
+      // Restoring brings it to the front; minimising lets the next one forward.
+      focusedBlade: on ? (s.focusedBlade === id ? null : s.focusedBlade) : id,
+      expandedBlade: on && s.expandedBlade === id ? null : s.expandedBlade,
+    })),
+  closeAllBlades: () =>
+    set({ blades: [], focusedBlade: null, expandedBlade: null, bladeOverview: false }),
+  setBladeOverview: (bladeOverview) =>
+    set((s) => ({ bladeOverview, expandedBlade: bladeOverview ? null : s.expandedBlade })),
   setPhase: (phase) => set({ phase }),
   setLevel: (level) => set({ level }),
   setCaption: (caption) => set({ caption }),
@@ -408,7 +432,7 @@ export const useStore = create<State>((set) => ({
       // screen, and leaving a full-height article standing while the cards
       // around it vanish is the interface arguing with the instruction.
       const blades = what === 'transcript' ? s.blades : []
-      const cleared = { panels, turns, blades, focusedBlade: null, expandedBlade: null }
+      const cleared = { panels, turns, blades, focusedBlade: null, expandedBlade: null, bladeOverview: false }
       return what === 'all'
         ? { ...cleared, caption: '', activeTool: null }
         : cleared

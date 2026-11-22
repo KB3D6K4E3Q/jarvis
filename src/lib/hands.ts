@@ -100,10 +100,32 @@ export const TIPS = [THUMB_TIP, INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP]
  * hand and only has to look alive, so it is allowed to be looser and more
  * responsive. Filtering both identically made the drawing feel dead.
  */
-const CURSOR_MIN_CUTOFF = 1.1
-const CURSOR_BETA = 0.012
+/**
+ * The cursor is filtered once, from the raw fingertip. It used to be filtered
+ * from the already-smoothed skeleton, i.e. twice in series, and two low-passes
+ * in a row add their lags together: that was most of why the cursor trailed
+ * the hand. One filter, a slightly lower floor for a steadier rest, and a
+ * higher beta so it opens up sooner once the hand moves.
+ */
+const CURSOR_MIN_CUTOFF = 0.85
+const CURSOR_BETA = 0.022
 const SKELETON_MIN_CUTOFF = 2.4
 const SKELETON_BETA = 0.02
+
+/**
+ * How much of the camera's view maps onto the screen.
+ *
+ * A hand at the very edge of the frame is half out of it, and MediaPipe loses
+ * hands that are half out of frame. Mapping the whole frame to the whole
+ * screen therefore put the screen's edges exactly where tracking fails: the
+ * close button in a corner was the hardest thing on screen to reach. Mapping
+ * the middle of the view instead puts every edge of the screen comfortably
+ * inside the frame, and means less arm travel to cross it. The bottom margin
+ * is the largest because that is where the wrist leaves the picture first.
+ */
+const REACH_X = 0.1
+const REACH_TOP = 0.08
+const REACH_BOTTOM = 0.16
 
 /**
  * Pinch thresholds, as a fraction of hand span rather than an absolute.
@@ -120,6 +142,45 @@ const SKELETON_BETA = 0.02
  */
 const PINCH_ON = 0.40
 const PINCH_OFF = 0.60
+
+/**
+ * The same thresholds, measured in 3D.
+ *
+ * MediaPipe also reports every joint in metres, in a frame centred on the
+ * hand. Distances there do not foreshorten: a hand turned edge-on to the
+ * camera, or pointing at it, has the same 3D proportions as one held flat,
+ * where the 2D picture of it squashes. In 2D that squash was the main source
+ * of misreads — a straight finger pointing at the lens looks short, so reads
+ * as curled, and a palm turned sideways shrinks the span the pinch is divided
+ * by, so a relaxed hand reads as pinching. 3D is used whenever it is present.
+ */
+const PINCH_ON_3D = 0.36
+/** Wide hysteresis: once you have hold of something, a pinch that loosens
+ *  slightly while you carry it must not drop it. */
+const PINCH_OFF_3D = 0.6
+/**
+ * In a pinch the index fingertip is out in front of the palm, meeting the
+ * thumb. In a fist it is tucked against the palm — with the thumb lying next
+ * to it, which is why fists used to read as pinches. Closer to the middle
+ * knuckle than this fraction of the palm, it is a fist, not a pinch.
+ */
+const TUCKED = 0.34
+
+/**
+ * A pinch must be apart this long before it lets go. A carried pinch loosens
+ * for a frame or two as the hand moves — motion blur, a finger briefly
+ * occluded — and each of those used to drop the blade mid-drag.
+ */
+const RELEASE_CONFIRM_MS = 70
+
+/** A hand that has just appeared cannot press for this long. Hands enter the
+ *  frame mid-gesture, and the first frames of a hand are the least reliable. */
+const ENTRY_GRACE_MS = 350
+
+/** A pinch cannot START while the hand moves faster than this, in screen
+ *  widths per second. A swipe or a hand dropping out of the way passes through
+ *  pinch-like shapes at speed; nobody aims a press at that speed. */
+const FAST_HAND = 1.1
 
 /** A finger counts as extended when its tip is this much further from the
  *  wrist than its middle joint. Ratio rather than a y-comparison, so it still
@@ -161,8 +222,9 @@ const PINCH_CONFIRM_MS = 70
  */
 const POSE_SETTLE_MS = 220
 
-/** Below this many pixels of travel, a press was a click rather than a drag. */
-const CLICK_SLOP = 20
+/** Below this many pixels of travel, a press was a click rather than a drag.
+ *  A hand holding a pinch drifts more than a mouse does, so a little more room. */
+const CLICK_SLOP = 30
 
 /**
  * How far back a press aims.
@@ -177,7 +239,9 @@ const AIM_LAG_MS = 190
 /** Nothing older than this is kept; two frames' worth of slack over the lag. */
 const TRAIL_MS = 500
 
-export type Gesture = 'point' | 'pinch' | 'frame' | 'open' | 'fist' | 'peace' | 'none'
+export type Gesture =
+  | 'point' | 'pinch' | 'frame' | 'open' | 'fist' | 'peace'
+  | 'thumbs-up' | 'thumbs-down' | 'none'
 export type Side = 'left' | 'right'
 
 /**
@@ -212,6 +276,22 @@ const SWAP_HANDEDNESS = false
  * that is genuinely new goes.
  */
 const MAX_JUMP_FRACTION = 0.28
+
+/**
+ * Ghost hands, two kinds, both borrowed from holo-gestures (MIT, Zubair
+ * Trabzada): https://github.com/zubair-trabzada/holo-gestures
+ *
+ * A hand smaller than this (wrist to middle knuckle, as a fraction of the
+ * camera frame) is a face, a poster or something far behind you that the model
+ * has mistaken for a hand. A real hand within reach is several times bigger.
+ */
+const SPAN_MIN = 0.025
+/**
+ * And a second detection whose wrist lands this close to the first one's (same
+ * units) is the model seeing one hand twice. Left in, it becomes a phantom
+ * second pinch that turns every drag into a two-handed gesture.
+ */
+const TWIN_GAP = 0.04
 
 function slotFor(
   side: Side,
@@ -328,6 +408,8 @@ const trails = new Map<number, { x: number; y: number; at: number }[]>()
 const pinchSince = new Map<number, number>()
 /** When the finger pose last changed, per hand — see POSE_SETTLE_MS. */
 const poseChangedAt = new Map<number, number>()
+/** When a held pinch first came apart, per hand — see RELEASE_CONFIRM_MS. */
+const releaseSince = new Map<number, number>()
 
 function filtersFor(id: number): Filters {
   let f = filters.get(id)
@@ -383,9 +465,15 @@ type Press = {
   /** What took the press, so the release and any click agree on their target. */
   captured: Element | null
   wasPinched: boolean
-  /** Where the press began — for telling a click from a drag. */
+  /** Where the press was aimed. */
   downX: number
   downY: number
+  /** Where the cursor actually was when it fired — what travel is measured
+   *  from. Not the aim point: that is where the finger was before it closed,
+   *  so measuring from it counted the closing itself as movement, and most
+   *  clicks were thrown away as drags. */
+  atX: number
+  atY: number
 }
 
 const presses = new Map<number, Press>()
@@ -424,7 +512,7 @@ function fire(
 function emit(h: Hand) {
   let p = presses.get(h.id)
   if (!p) {
-    p = { captured: null, wasPinched: false, downX: h.x, downY: h.y }
+    p = { captured: null, wasPinched: false, downX: h.x, downY: h.y, atX: h.x, atY: h.y }
     presses.set(h.id, p)
   }
 
@@ -446,6 +534,8 @@ function emit(h: Hand) {
     p.captured = target
     p.downX = aim.x
     p.downY = aim.y
+    p.atX = h.x
+    p.atY = h.y
     fire(target, 'pointerdown', h, true, aim)
   } else if (!h.pinched && p.wasPinched) {
     const target = p.captured ?? over
@@ -453,17 +543,36 @@ function emit(h: Hand) {
     // Only a press that ends roughly where it began is a click. One that
     // travelled was a drag, and a drag that also clicked would close the very
     // blade it had just finished moving.
-    const travelled = Math.hypot(h.x - p.downX, h.y - p.downY)
-    if (target && travelled < CLICK_SLOP && target === over) {
+    // The click goes to whatever took the press. It used to also demand the
+    // same element still be under the cursor on release, and a cursor that
+    // drifts a few pixels off a small button lost the click for no reason.
+    const travelled = Math.hypot(h.x - p.atX, h.y - p.atY)
+    if (target && travelled < CLICK_SLOP) {
       target.dispatchEvent(
         new MouseEvent('click', {
           bubbles: true,
           cancelable: true,
           composed: true,
-          clientX: h.x,
-          clientY: h.y,
+          clientX: p.downX,
+          clientY: p.downY,
         }),
       )
+      /**
+       * An iframe is another document, and usually another site: a click
+       * dispatched at the element never reaches what is inside it, and the
+       * browser rightly allows nothing that would. So say that it was tapped,
+       * and where; whatever put the frame there may know how to talk to it —
+       * a video player has a command for play.
+       */
+      if (target.tagName === 'IFRAME') {
+        const r = target.getBoundingClientRect()
+        target.dispatchEvent(
+          new CustomEvent('hand-tap', {
+            bubbles: true,
+            detail: { x: p.downX - r.left, y: p.downY - r.top },
+          }),
+        )
+      }
     }
     p.captured = null
   } else {
@@ -492,23 +601,13 @@ function releasePress(id: number, at: { x: number; y: number }) {
 const dist = (a: { x: number; y: number }, b: { x: number; y: number }) =>
   Math.hypot(a.x - b.x, a.y - b.y)
 
-/**
- * Is this finger extended?
- *
- * Compared as distance from the wrist rather than by which landmark is higher
- * on screen. The y-comparison is the common recipe and it is wrong the moment
- * the hand is not upright: turn your hand sideways and every finger reads as
- * curled. Distance from the wrist is rotation-invariant, which is the property
- * the question actually needs.
+/*
+ * Is a finger extended? Distance from the wrist, not height on screen: the
+ * y-comparison is the common recipe and it is wrong the moment the hand is not
+ * upright — turn your hand sideways and every finger reads as curled. Distance
+ * from the wrist is rotation-invariant, which is the property the question
+ * actually needs. Done inline in the loop now, in 3D where it can be.
  */
-function isExtended(
-  marks: { x: number; y: number }[],
-  tip: number,
-  pip: number,
-): boolean {
-  const wrist = marks[WRIST]
-  return dist(marks[tip], wrist) > dist(marks[pip], wrist) * EXTEND_RATIO
-}
 
 /**
  * Only report a finger pose once it has held.
@@ -542,9 +641,21 @@ function stableGesture(id: number, raw: Gesture, now: number): Gesture {
 function classify(
   fingers: Hand['fingers'],
   pinched: boolean,
+  /** How far the thumb tip sits above its base, in hand spans; negative is below. */
+  thumbRise = 0,
 ): Gesture {
   if (pinched) return 'pinch'
   const { thumb, index, middle, ring, pinky } = fingers
+  /**
+   * Thumbs up and down: the thumb out, every finger curled, and the thumb
+   * clearly pointing up or down the screen. Sideways is neither — a fist with
+   * the thumb resting along it is the commonest accidental version, and it
+   * points sideways.
+   */
+  if (thumb && !index && !middle && !ring && !pinky) {
+    if (thumbRise > 0.55) return 'thumbs-up'
+    if (thumbRise < -0.55) return 'thumbs-down'
+  }
   const up = [thumb, index, middle, ring, pinky].filter(Boolean).length
   if (index && middle && !ring && !pinky) return 'peace'
   /**
@@ -560,6 +671,93 @@ function classify(
   if (up >= 4) return 'open'
   if (up === 0) return 'fist'
   return 'none'
+}
+
+/* ------------------------------------------------------------ whole gestures */
+
+/**
+ * Swipes and holds are published as window events rather than acted on here,
+ * for the same reason presses are PointerEvents: this file knows hands, not
+ * blades or conversations. `hand-swipe` carries where it started and which
+ * way it went; `hand-hold` says a pose was held on purpose. What they mean is
+ * decided by whoever listens.
+ */
+export type SwipeDetail = { dir: 'left' | 'right'; x: number; y: number; hand: number }
+export type HoldGesture = 'thumbs-up' | 'thumbs-down' | 'palm'
+export type HoldDetail = { gesture: HoldGesture; hand: number; x: number; y: number }
+
+/** A swipe: an open hand crossing this fraction of the screen... */
+const SWIPE_MIN = 0.2
+/** ...within this long. Slower than that is moving your hand, not swiping. */
+const SWIPE_WINDOW_MS = 320
+const SWIPE_COOLDOWN_MS = 800
+
+const sweeps = new Map<number, { x: number; y: number; at: number }[]>()
+const swipeQuiet = new Map<number, number>()
+
+function detectSwipe(h: Hand, open: boolean, now: number) {
+  // Measured at the palm, which a swipe carries cleanly; fingertips flap.
+  const p = h.points[MIDDLE_MCP]
+  if (!open || h.pinched || !p) {
+    sweeps.delete(h.id)
+    return
+  }
+  const hist = sweeps.get(h.id) ?? []
+  hist.push({ x: p.x, y: p.y, at: now })
+  while (hist.length > 1 && now - hist[0].at > SWIPE_WINDOW_MS) hist.shift()
+  sweeps.set(h.id, hist)
+  if (now < (swipeQuiet.get(h.id) ?? 0)) return
+  const first = hist[0]
+  const dx = p.x - first.x
+  const dy = p.y - first.y
+  if (Math.abs(dx) > window.innerWidth * SWIPE_MIN && Math.abs(dy) < Math.abs(dx) * 0.6) {
+    swipeQuiet.set(h.id, now + SWIPE_COOLDOWN_MS)
+    sweeps.delete(h.id)
+    // A swipe is an open hand in motion; it must not also count as a held palm.
+    holds.delete(h.id)
+    const detail: SwipeDetail = { dir: dx > 0 ? 'right' : 'left', x: first.x, y: first.y, hand: h.id }
+    window.dispatchEvent(new CustomEvent('hand-swipe', { detail }))
+  }
+}
+
+/** How long a pose must be held, on top of the gesture's own settling. */
+const HOLD_MS: Record<HoldGesture, number> = { 'thumbs-up': 450, 'thumbs-down': 450, palm: 550 }
+/** A hold is a hand kept still; drifting further than this restarts it. */
+const HOLD_DRIFT = 0.045
+
+const holds = new Map<number, { g: HoldGesture; since: number; fired: boolean; x: number; y: number }>()
+
+function detectHold(h: Hand, now: number) {
+  const g: HoldGesture | null =
+    h.gesture === 'open' ? 'palm'
+    : h.gesture === 'thumbs-up' || h.gesture === 'thumbs-down' ? h.gesture
+    : null
+  const p = h.points[MIDDLE_MCP]
+  if (!g || !p) {
+    holds.delete(h.id)
+    return
+  }
+  const c = holds.get(h.id)
+  if (!c || c.g !== g || Math.hypot(p.x - c.x, p.y - c.y) > window.innerWidth * HOLD_DRIFT) {
+    holds.set(h.id, { g, since: now, fired: false, x: p.x, y: p.y })
+    return
+  }
+  if (!c.fired && now - c.since >= HOLD_MS[g]) {
+    c.fired = true
+    const detail: HoldDetail = { gesture: g, hand: h.id, x: p.x, y: p.y }
+    window.dispatchEvent(new CustomEvent('hand-hold', { detail }))
+  }
+}
+
+/**
+ * How far along a hold is, for drawing it filling up. Thumbs only: an open
+ * palm is also how you let go of things, and a ring filling under every open
+ * hand would be noise. Its effect shows up where it lands instead.
+ */
+export function holdProgress(id: number): { gesture: HoldGesture; progress: number } | null {
+  const c = holds.get(id)
+  if (!c || c.fired || c.g === 'palm') return null
+  return { gesture: c.g, progress: Math.min(1, (performance.now() - c.since) / HOLD_MS[c.g]) }
 }
 
 /* -------------------------------------------------------------------- camera */
@@ -608,6 +806,9 @@ function dropHand(i: number) {
   trails.delete(i)
   pinchSince.delete(i)
   poseChangedAt.delete(i)
+  sweeps.delete(i)
+  holds.delete(i)
+  releaseSince.delete(i)
 }
 
 /**
@@ -640,6 +841,12 @@ function loop(mine: number) {
   const h = window.innerHeight
   const found = result?.landmarks ?? []
   const labels = result?.handedness ?? []
+  const world = result?.worldLandmarks ?? []
+  /** Camera coordinates to screen pixels: mirrored, with the reach margins. */
+  const toScreen = (m: { x: number; y: number }) => ({
+    x: ((1 - m.x - REACH_X) / (1 - 2 * REACH_X)) * w,
+    y: ((m.y - REACH_TOP) / (1 - REACH_TOP - REACH_BOTTOM)) * h,
+  })
   diag.count = found.length
   const at = now / 1000
 
@@ -648,6 +855,9 @@ function loop(mine: number) {
   for (let k = 0; k < found.length && k < 2; k++) {
     const marks = found[k]
     if (!marks || marks.length < 21) continue
+    if (Math.hypot(marks[WRIST].x - marks[MIDDLE_MCP].x, marks[WRIST].y - marks[MIDDLE_MCP].y) < SPAN_MIN) continue
+    if (k > 0 && found[0]?.[WRIST] &&
+        Math.hypot(marks[WRIST].x - found[0][WRIST].x, marks[WRIST].y - found[0][WRIST].y) < TWIN_GAP) continue
 
     /**
      * Which hand this is.
@@ -677,7 +887,7 @@ function loop(mine: number) {
      * smooth each hand start smoothing the other one. Keying on handedness
      * makes your left hand slot 0 for as long as it is your left hand.
      */
-    const wristPx = { x: (1 - marks[WRIST].x) * w, y: marks[WRIST].y * h }
+    const wristPx = toScreen(marks[WRIST])
     const reach = Math.hypot(w, h)
     const i = slotFor(side, wristPx, seen, reach)
     seen.add(i)
@@ -686,12 +896,28 @@ function loop(mine: number) {
 
     // Mirrored, because the camera faces you: moving your hand right should
     // move the cursor right, not left.
-    const points = marks.map((m, j) =>
-      f.joints[j].filter((1 - m.x) * w, m.y * h, at),
-    )
+    const points = marks.map((m, j) => {
+      const q = toScreen(m)
+      return f.joints[j].filter(q.x, q.y, at)
+    })
 
     const span = dist(points[WRIST], points[MIDDLE_MCP]) || 1
-    const gap = dist(points[THUMB_TIP], points[INDEX_TIP]) / span
+
+    /**
+     * Distances for the shape questions — is it pinching, which fingers are
+     * out — come from the 3D landmarks when there are any. See PINCH_ON_3D.
+     * The screen points above are still what is drawn and what is aimed.
+     */
+    const w3 = world[k] && world[k].length >= 21 ? world[k] : null
+    const D = (a: number, b: number) =>
+      w3
+        ? Math.hypot(w3[a].x - w3[b].x, w3[a].y - w3[b].y, w3[a].z - w3[b].z)
+        : dist(points[a], points[b])
+    const palm = D(WRIST, MIDDLE_MCP) || 1
+    const gap = D(THUMB_TIP, INDEX_TIP) / palm
+    const pinchOn = w3 ? PINCH_ON_3D : PINCH_ON
+    const pinchOff = w3 ? PINCH_OFF_3D : PINCH_OFF
+    const tucked = D(INDEX_TIP, MIDDLE_MCP) / palm < TUCKED
 
     let hand = hands.find((q) => q.id === i)
     if (!hand) {
@@ -704,6 +930,9 @@ function loop(mine: number) {
         handedness: side, span,  // replaced by the vote below on the same frame
       }
       hands.push(hand)
+      // Entry grace: the settling window, pushed out so the first frames of a
+      // hand cannot press. See ENTRY_GRACE_MS.
+      poseChangedAt.set(i, now + ENTRY_GRACE_MS - POSE_SETTLE_MS)
     }
     hand.points = points
     hand.span = span
@@ -718,7 +947,31 @@ function loop(mine: number) {
      * rearranging after a deliberate change of gesture. A press has to get past
      * all three, and an intentional pinch does so without noticing they exist.
      */
-    const wantsPinch = hand.pinched ? gap < PINCH_OFF : gap < PINCH_ON
+    /**
+     * How fast the hand is moving, from the cursor trail, in screen widths per
+     * second. A pinch may not begin above FAST_HAND; one already held is
+     * unaffected, or a fast drag would drop what it carries.
+     */
+    const prior = trails.get(i) ?? []
+    let speed = 0
+    for (const p of prior) {
+      if (now - p.at <= 110 && now - p.at >= 40) {
+        speed = Math.hypot(hand.x - p.x, hand.y - p.y) / ((now - p.at) / 1000) / w
+        break
+      }
+    }
+
+    // `tucked` only stops a pinch starting. Holding a firm pinch curls the
+    // index toward the palm, and checking it mid-pinch dropped what you held.
+    const wantsPinch = hand.pinched
+      ? gap < pinchOff
+      : !tucked && gap < pinchOn && speed < FAST_HAND
+    if (!wantsPinch && hand.pinched) {
+      releaseSince.set(i, releaseSince.get(i) ?? now)
+    } else {
+      releaseSince.delete(i)
+    }
+    const letGo = hand.pinched && !wantsPinch && now - (releaseSince.get(i) ?? now) >= RELEASE_CONFIRM_MS
     if (wantsPinch && !hand.pinched) {
       pinchSince.set(i, pinchSince.get(i) ?? now)
     } else if (!wantsPinch) {
@@ -727,9 +980,9 @@ function loop(mine: number) {
     const held = pinchSince.get(i)
     const settledLongEnough = now - (poseChangedAt.get(i) ?? 0) > POSE_SETTLE_MS
     const pinched = hand.pinched
-      ? wantsPinch
+      ? !letGo
       : wantsPinch && held !== undefined && now - held >= PINCH_CONFIRM_MS && settledLongEnough
-    hand.closeness = Math.max(0, Math.min(1, 1 - (gap - PINCH_ON) / (PINCH_OFF - PINCH_ON)))
+    hand.closeness = tucked && !hand.pinched ? 0 : Math.max(0, Math.min(1, 1 - (gap - pinchOn) / (pinchOff - pinchOn)))
 
     /**
      * Where the cursor sits: the index fingertip, and nothing else.
@@ -742,7 +995,8 @@ function loop(mine: number) {
      * sometimes on the blade, sometimes on nothing. It is a pointer that moves
      * while you click, which no pointer may do.
      */
-    const tip = points[INDEX_TIP]
+    // From the raw fingertip, not the smoothed skeleton: one filter, not two.
+    const tip = toScreen(marks[INDEX_TIP])
     const aimed = f.cursor.filter(tip.x, tip.y, at)
     hand.x = aimed.x
     hand.y = aimed.y
@@ -778,18 +1032,22 @@ function loop(mine: number) {
     }
     hand.pinched = pinched
 
+    // Measured with D, so in 3D when there is 3D — rotation and foreshortening
+    // no longer turn a straight finger into a curled one. See the note above
+    // stableGesture for why distance from the wrist, not height on screen.
+    const out = (tipJ: number, pipJ: number) => D(tipJ, WRIST) > D(pipJ, WRIST) * EXTEND_RATIO
     hand.fingers = {
       // The thumb never straightens the way the fingers do, so it is measured
       // against its own base joint rather than by the same ratio.
-      thumb: dist(points[THUMB_TIP], points[WRIST]) > dist(points[THUMB_MCP], points[WRIST]) * 1.35
-        || dist(points[THUMB_TIP], points[INDEX_PIP]) > span * 1.1,
-      index: isExtended(points, INDEX_TIP, INDEX_PIP),
-      middle: isExtended(points, MIDDLE_TIP, MIDDLE_PIP),
-      ring: isExtended(points, RING_TIP, RING_PIP),
-      pinky: isExtended(points, PINKY_TIP, PINKY_PIP),
+      thumb: D(THUMB_TIP, WRIST) > D(THUMB_MCP, WRIST) * 1.35 || D(THUMB_TIP, INDEX_PIP) > palm * 1.1,
+      index: out(INDEX_TIP, INDEX_PIP),
+      middle: out(MIDDLE_TIP, MIDDLE_PIP),
+      ring: out(RING_TIP, RING_PIP),
+      pinky: out(PINKY_TIP, PINKY_PIP),
     }
+    const thumbRise = (points[THUMB_MCP].y - points[THUMB_TIP].y) / span
     const wasGesture = hand.gesture
-    hand.gesture = stableGesture(i, classify(hand.fingers, pinched), now)
+    hand.gesture = stableGesture(i, classify(hand.fingers, pinched, thumbRise), now)
     // A change of pose starts the settling window. Pinch is not counted: it is
     // the thing being protected, not a transition to recover from.
     if (hand.gesture !== wasGesture && hand.gesture !== 'pinch' && wasGesture !== 'pinch') {
@@ -798,6 +1056,10 @@ function loop(mine: number) {
     hand.handedness = votedSide(i, side)
 
     emit(hand)
+
+    const { index: ix, middle: mx, ring: rx, pinky: px } = hand.fingers
+    detectSwipe(hand, [ix, mx, rx, px].filter(Boolean).length >= 3, now)
+    detectHold(hand, now)
   }
 
   // Anything not seen this frame has left the picture.
@@ -871,6 +1133,10 @@ export function disableHands(): void {
   trails.clear()
   pinchSince.clear()
   poseChangedAt.clear()
+  sweeps.clear()
+  swipeQuiet.clear()
+  holds.clear()
+  releaseSince.clear()
   // Give the hold back rather than tearing the stream down: the camera blade
   // may still be showing it, and stopping the tracks would blank it.
   if (video) {
@@ -921,6 +1187,37 @@ export function frameSpan(): number | null {
   const ca = corner(a)
   const cb = corner(b)
   return Math.hypot(ca.x - cb.x, ca.y - cb.y)
+}
+
+/**
+ * Both hands closed, and how far apart they are.
+ *
+ * Two fists, pulled apart to grow and brought together to shrink. It is the
+ * gesture for stretching something between your hands, and unlike the framing
+ * pose it survives being half-turned away from the camera: a closed hand looks
+ * closed from every angle, where an L-corner only reads as one when the palm
+ * faces the lens.
+ *
+ * Closure is read from the fingers rather than from `gesture`, deliberately.
+ * A fist brings the thumb close to the index, so it sits near the pinch
+ * threshold and `classify` reports some fists as a pinch; keying on the
+ * gesture string would make the resize drop out for exactly the hands that are
+ * closed hardest. The fingers do not lie.
+ *
+ * Measured wrist to wrist. Fingertips move about inside a fist as it tightens,
+ * the wrist does not, and a span that twitches while you hold still is a span
+ * that resizes the blade while you hold still.
+ */
+const closed = (h: Hand) =>
+  !h.fingers.index && !h.fingers.middle && !h.fingers.ring && !h.fingers.pinky
+
+export function fistSpan(): number | null {
+  const fists = hands.filter(closed)
+  if (fists.length < 2) return null
+  const [a, b] = fists
+  const wa = a.points[WRIST]
+  const wb = b.points[WRIST]
+  return Math.hypot(wa.x - wb.x, wa.y - wb.y)
 }
 
 /**

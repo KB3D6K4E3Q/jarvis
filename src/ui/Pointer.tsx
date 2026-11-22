@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { BONES, INDEX_TIP, THUMB_TIP, TIPS, WRIST, diag, hands } from '../lib/hands'
+import { BONES, INDEX_TIP, THUMB_TIP, TIPS, WRIST, diag, hands, holdProgress } from '../lib/hands'
 
 /**
  * Your hands, drawn on the glass.
@@ -197,6 +197,29 @@ export function Pointer() {
           // which cursor is yours to move.
           const tag = `${hand.handedness === 'right' ? 'RIGHT' : 'LEFT'} · ${hand.gesture.toUpperCase()}`
           ctx.fillText(tag, p[WRIST].x, p[WRIST].y + 22 * scale)
+        }
+
+        // -- a hold filling up ----------------------------------------------
+        // Thumbs up or down count only once held, so show the wait: a ring
+        // round the thumb that closes as the hold completes. Without it a
+        // gesture that needs half a second reads as one that did nothing.
+        const hold = holdProgress(hand.id)
+        if (hold) {
+          const t = p[THUMB_TIP]
+          const r = 16 * scale
+          const tone = hold.gesture === 'thumbs-up' ? '#7dffb0' : '#ff8a7a'
+          ctx.globalAlpha = 0.25
+          ctx.strokeStyle = tone
+          ctx.shadowColor = tone
+          ctx.shadowBlur = 10 * scale
+          ctx.lineWidth = 2.5 * scale
+          ctx.beginPath()
+          ctx.arc(t.x, t.y, r, 0, Math.PI * 2)
+          ctx.stroke()
+          ctx.globalAlpha = 0.95
+          ctx.beginPath()
+          ctx.arc(t.x, t.y, r, -Math.PI / 2, -Math.PI / 2 + hold.progress * Math.PI * 2)
+          ctx.stroke()
         }
       }
 

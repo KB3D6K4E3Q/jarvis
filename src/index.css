@@ -1700,25 +1700,6 @@ kbd {
   font-size: 12px;
 }
 
-.bl-hint {
-  position: absolute;
-  bottom: 3.2vh;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 9px;
-  letter-spacing: 0.14em;
-  opacity: 0.42;
-  pointer-events: none;
-}
-.bl-hint kbd {
-  font: inherit;
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
-  padding: 1px 4px;
-}
-
 /* The body scrollbar inside a blade, matched to the reader view's own. */
 .bl-body::-webkit-scrollbar { width: 9px }
 .bl-body::-webkit-scrollbar-thumb {
@@ -1766,6 +1747,279 @@ kbd {
 
 /* A resized blade is sized inline, so the presets must not fight it. */
 .bl[style*="width"] { max-width: none; max-height: none }
+
+/* ------------------------------------------------------ blades: holography */
+/*
+   What makes a surface read as projected light rather than as a dark window:
+   it materialises rather than fades, light runs round its edge as it does, its
+   corners are brighter than its sides, and it carries a faint raster. Each of
+   those is a pseudo-element or a span with pointer-events off, so none of them
+   can take a press meant for what is underneath.
+*/
+
+/* Materialise: drawn open from a bright line across the middle. */
+.bl {
+  /* backwards, not both: a clip-path left on afterwards would clip the
+     blade's own glow, which lives outside its box. */
+  animation: blMaterialise 520ms cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+}
+@keyframes blMaterialise {
+  0%   { clip-path: inset(49.5% 0 49.5% 0); filter: brightness(2.6) saturate(0.6); }
+  45%  { clip-path: inset(0 0 0 0);         filter: brightness(1.5); }
+  100% { clip-path: inset(0 0 0 0);         filter: none; }
+}
+
+/* Corner brackets: larger, brighter and glowing on the front blade. */
+.bl > .pk {
+  width: 16px;
+  height: 16px;
+  z-index: 3;
+  pointer-events: none;
+  transition: width 220ms ease, height 220ms ease, opacity 220ms ease;
+}
+.bl-front > .pk {
+  width: 22px;
+  height: 22px;
+  border-width: 2px;
+  opacity: 1;
+  filter: drop-shadow(0 0 4px var(--accent));
+}
+
+/* A faint raster over the whole surface, drifting slowly downward. */
+.bl-scan {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 5%, transparent) 0 1px,
+    transparent 1px 3px
+  );
+  mix-blend-mode: screen;
+  opacity: 0.55;
+  animation: blRaster 7s linear infinite;
+}
+@keyframes blRaster { to { background-position: 0 90px } }
+
+/* Light running once round the edge as the blade arrives, then a slow
+   shimmer along the top edge of the front one. */
+.bl-trace {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  padding: 1px;
+  background: conic-gradient(
+    from var(--trace-angle, 0deg),
+    transparent 0 70%,
+    color-mix(in srgb, var(--accent) 80%, white) 88%,
+    transparent 100%
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  animation: blTrace 900ms ease-out 1 both;
+}
+@property --trace-angle {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+@keyframes blTrace {
+  from { --trace-angle: 0deg; opacity: 1 }
+  80%  { opacity: 1 }
+  to   { --trace-angle: 360deg; opacity: 0 }
+}
+
+.bl-front .bl-head {
+  background:
+    linear-gradient(90deg,
+      transparent,
+      color-mix(in srgb, var(--accent) 22%, transparent) 50%,
+      transparent) 0 0 / 40% 1px no-repeat,
+    color-mix(in srgb, var(--accent) 9%, transparent);
+  animation: blShimmer 4.5s linear infinite;
+}
+@keyframes blShimmer {
+  from { background-position: -40% 0, 0 0 }
+  to   { background-position: 140% 0, 0 0 }
+}
+
+/* The title gets a status tick and a little more presence. */
+.bl-title::before {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 8px;
+  vertical-align: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+.bl-front .bl-title { text-shadow: 0 0 8px color-mix(in srgb, var(--accent) 55%, transparent) }
+
+/* Buttons light up rather than merely tint — a hand cursor needs to see that
+   it is over something before it presses. */
+.bl-btn:hover {
+  box-shadow: 0 0 10px -2px var(--accent), inset 0 0 6px -2px var(--accent);
+  color: white;
+}
+
+/* ------------------------------------------------------ blades: players */
+
+/* The frame above, hand-sized controls below. Big targets on purpose: these
+   are aimed with a fingertip from across a room, not with a mouse. */
+.bl-player {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.bl-player > .bl-frame { flex: 1 1 auto; height: auto; min-height: 0 }
+.bl-controls {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  padding: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.bl-ctl {
+  appearance: none;
+  min-width: 64px;
+  min-height: 44px;
+  padding: 0 16px;
+  font: inherit;
+  font-size: 15px;
+  letter-spacing: 0.06em;
+  color: color-mix(in srgb, var(--accent) 85%, white);
+  background: color-mix(in srgb, var(--accent) 8%, rgba(2, 8, 12, 0.8));
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, transparent);
+  cursor: pointer;
+  transition: background 140ms ease, box-shadow 140ms ease, transform 90ms ease;
+}
+.bl-ctl:hover {
+  background: color-mix(in srgb, var(--accent) 22%, rgba(2, 8, 12, 0.8));
+  box-shadow: 0 0 16px -4px var(--accent);
+  color: white;
+}
+.bl-ctl:active { transform: scale(0.94) }
+.bl-ctl-main { min-width: 96px; font-size: 18px }
+
+/* ----------------------------------------------------- blades: overview */
+
+/* In the overview every blade is a pickable tile, so the cursor says so. */
+.bl-tile { cursor: pointer }
+.bl-tile .bl-body { pointer-events: none }
+.bl-tile:hover {
+  box-shadow:
+    0 0 0 1px var(--accent),
+    0 0 40px -6px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+.bl-tile:hover > .pk { width: 26px; height: 26px; opacity: 1 }
+
+.bl-pick {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+/* Darken what is behind the tiles, so they read as a choice to make. */
+.bl-backdrop {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, rgba(0, 8, 12, 0.55), rgba(0, 4, 8, 0.85));
+  backdrop-filter: blur(3px);
+  pointer-events: auto;
+  animation: fxFadeIn 240ms ease both;
+}
+@keyframes fxFadeIn { from { opacity: 0 } }
+
+/* -------------------------------------------------------- blades: snapping */
+
+.bl-snap-hint {
+  position: absolute;
+  z-index: 70;
+  pointer-events: none;
+  border: 1px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: inset 0 0 40px -10px var(--accent);
+  animation: fxFadeIn 140ms ease both;
+}
+.bl-snap-left  { top: 8vh; bottom: 12vh; left: 1vw;  width: 48vw }
+.bl-snap-right { top: 8vh; bottom: 12vh; right: 1vw; width: 48vw }
+.bl-snap-top   { inset: 4vh 3vw }
+
+/* ----------------------------------------------------------- blades: dock */
+
+.bl-dock {
+  position: absolute;
+  bottom: 2.4vh;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 65;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 92vw;
+  pointer-events: auto;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+}
+.bl-dock-btn,
+.bl-chip {
+  appearance: none;
+  font: inherit;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--accent) 85%, white);
+  background: color-mix(in srgb, var(--accent) 8%, rgba(2, 8, 12, 0.85));
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  padding: 7px 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 160ms ease, box-shadow 160ms ease;
+}
+.bl-dock-btn:hover,
+.bl-chip:hover,
+.bl-dock-btn.on {
+  background: color-mix(in srgb, var(--accent) 22%, rgba(2, 8, 12, 0.85));
+  box-shadow: 0 0 14px -4px var(--accent);
+}
+.bl-chip {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  animation: blChipIn 260ms ease both;
+}
+@keyframes blChipIn { from { opacity: 0; transform: translateY(8px) } }
+.bl-chip-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 7px;
+  vertical-align: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+.bl-dock-keys {
+  margin-left: 8px;
+  opacity: 0.42;
+  white-space: nowrap;
+}
+.bl-dock-keys kbd {
+  font: inherit;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  padding: 1px 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bl, .bl-trace, .bl-scan, .bl-front .bl-head { animation: none }
+}
 
 /* ------------------------------------------------------------------- hands */
 /*

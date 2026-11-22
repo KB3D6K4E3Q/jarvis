@@ -1,9 +1,9 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useStore, type Blade } from '../store'
 import { BRIDGE_HTTP_URL } from '../config'
 import { sanitisePanelHtml } from './sanitise'
-import { frameSpan, peaceScroll, pinchCount } from '../lib/hands'
+import { fistSpan, peaceScroll, pinchCount, type SwipeDetail } from '../lib/hands'
 import * as camera from '../lib/camera'
 
 /**
@@ -80,15 +80,22 @@ function embedUrl(raw: string): string | null {
   const host = url.hostname.toLowerCase().replace(/^(?:www|m|music)\./, '')
   const id = (s: string) => (/^[\w-]{6,20}$/.test(s) ? s : null)
 
+  // enablejsapi lets this page drive the player by message — the only way a
+  // hand can press play, since nothing may click inside another site's frame.
+  const yt = (v: string) =>
+    `https://www.youtube-nocookie.com/embed/${v}?enablejsapi=1&origin=${encodeURIComponent(location.origin)}`
   if (host === 'youtube.com' && url.pathname === '/watch') {
     const v = id(url.searchParams.get('v') ?? '')
-    return v && `https://www.youtube-nocookie.com/embed/${v}`
+    return v && yt(v)
   }
   if (host === 'youtu.be') {
     const v = id(url.pathname.slice(1))
-    return v && `https://www.youtube-nocookie.com/embed/${v}`
+    return v && yt(v)
   }
-  if (host === 'youtube-nocookie.com' && /^\/embed\/[\w-]+/.test(url.pathname)) return url.href
+  if (host === 'youtube-nocookie.com' && /^\/embed\/[\w-]+/.test(url.pathname)) {
+    const v = id(url.pathname.split('/')[2] ?? '')
+    return v && yt(v)
+  }
   if (host === 'vimeo.com') {
     const v = url.pathname.split('/').filter(Boolean)[0] ?? ''
     return /^\d+$/.test(v) ? `https://player.vimeo.com/video/${v}` : null
@@ -96,6 +103,158 @@ function embedUrl(raw: string): string | null {
   if (host === 'player.vimeo.com' && /^\/video\/\d+/.test(url.pathname)) return url.href
   return null
 }
+
+/* ------------------------------------------------------------------ players */
+
+/**
+ * A YouTube or Vimeo player that a hand can use.
+ *
+ * The player is another site in a frame, and no page may click inside another
+ * site's frame — not with a mouse event it made up, not with anything. Both
+ * players instead accept commands by postMessage. So a hand gets two ways in:
+ * a pinch-click on the picture (hands.ts reports it as `hand-tap` on the
+ * frame) plays or pauses, and a row of large controls under it, which are
+ * ordinary buttons in this page and so click like everything else.
+ */
+const VideoEmbed = memo(function VideoEmbed({ src, title }: { src: string; title: string }) {
+  const frame = useRef<HTMLIFrameElement>(null)
+  const vimeo = src.includes('player.vimeo.com')
+  const [playing, setPlaying] = useState(false)
+  const [muted, setMuted] = useState(false)
+  /** Seconds in, as last reported by the player. Needed to seek relatively. */
+  const time = useRef(0)
+
+  const post = useCallback(
+    (msg: object) => {
+      const target = vimeo ? 'https://player.vimeo.com' : 'https://www.youtube-nocookie.com'
+      frame.current?.contentWindow?.postMessage(JSON.stringify(msg), target)
+    },
+    [vimeo],
+  )
+
+  const command = useCallback(
+    (what: 'play' | 'pause' | 'mute' | 'unmute' | 'seek', at = 0) => {
+      if (vimeo) {
+        if (what === 'play') post({ method: 'play' })
+        else if (what === 'pause') post({ method: 'pause' })
+        else if (what === 'mute') post({ method: 'setVolume', value: 0 })
+        else if (what === 'unmute') post({ method: 'setVolume', value: 1 })
+        else post({ method: 'setCurrentTime', value: Math.max(0, at) })
+        return
+      }
+      const func = { play: 'playVideo', pause: 'pauseVideo', mute: 'mute', unmute: 'unMute', seek: 'seekTo' }[what]
+      post({ event: 'command', func, args: what === 'seek' ? [Math.max(0, at), true] : [] })
+    },
+    [post, vimeo],
+  )
+
+  // Ask the player to report its state, and keep track of what it says.
+  useEffect(() => {
+    const el = frame.current
+    if (!el) return
+    const subscribe = () => {
+      if (vimeo) {
+        for (const value of ['play', 'pause', 'playProgress']) post({ method: 'addEventListener', value })
+      } else {
+        post({ event: 'listening', id: title, channel: 'widget' })
+      }
+    }
+    const onMessage = (e: MessageEvent) => {
+      if (e.source !== el.contentWindow) return
+      let d: Record<string, unknown>
+      try {
+        d = typeof e.data === 'string' ? JSON.parse(e.data) : e.data
+      } catch {
+        return
+      }
+      if (vimeo) {
+        if (d.event === 'ready') subscribe()
+        if (d.event === 'play') setPlaying(true)
+        if (d.event === 'pause') setPlaying(false)
+        const sec = (d.data as { seconds?: number } | undefined)?.seconds
+        if (d.event === 'playProgress' && typeof sec === 'number') time.current = sec
+        return
+      }
+      const info = d.info as { playerState?: number; currentTime?: number; muted?: boolean } | undefined
+      if (d.event === 'onReady') subscribe()
+      if (!info) return
+      // 1 is playing, 3 buffering (still on its way to playing).
+      if (typeof info.playerState === 'number') setPlaying(info.playerState === 1 || info.playerState === 3)
+      if (typeof info.currentTime === 'number') time.current = info.currentTime
+      if (typeof info.muted === 'boolean') setMuted(info.muted)
+    }
+    window.addEventListener('message', onMessage)
+    el.addEventListener('load', subscribe)
+    return () => {
+      window.removeEventListener('message', onMessage)
+      el.removeEventListener('load', subscribe)
+    }
+  }, [post, vimeo, title])
+
+  const toggle = useCallback(() => {
+    command(playing ? 'pause' : 'play')
+    // Optimistic: the player confirms within a moment, and a button that
+    // waits for the round trip feels like it missed.
+    setPlaying(!playing)
+  }, [command, playing])
+
+  // A pinch-click on the picture itself.
+  useEffect(() => {
+    const el = frame.current
+    if (!el) return
+    el.addEventListener('hand-tap', toggle)
+    return () => el.removeEventListener('hand-tap', toggle)
+  }, [toggle])
+
+  const skip = (by: number) => {
+    time.current = Math.max(0, time.current + by)
+    command('seek', time.current)
+  }
+
+  // Pressing a control must not also start dragging the blade.
+  const stop = (e: React.PointerEvent) => e.stopPropagation()
+
+  return (
+    <div className="bl-player">
+      <iframe
+        ref={frame}
+        className="bl-frame"
+        src={src}
+        // A player genuinely needs scripts and its own origin. Nothing that
+        // reaches the room the user is sitting in is granted.
+        sandbox="allow-scripts allow-same-origin allow-presentation"
+        allow="accelerometer; encrypted-media; picture-in-picture; fullscreen; autoplay"
+        // Not no-referrer: YouTube and Vimeo refuse to play without knowing
+        // which site embeds them, and YouTube says so as "Error 153". This
+        // sends the origin alone (http://localhost:5173), never the path.
+        referrerPolicy="strict-origin-when-cross-origin"
+        allowFullScreen
+        title={title}
+      />
+      <div className="bl-controls" onPointerDown={stop}>
+        <button className="bl-ctl" onClick={() => skip(-10)} title="Back ten seconds">
+          ◂◂ 10
+        </button>
+        <button className="bl-ctl bl-ctl-main" onClick={toggle} title={playing ? 'Pause' : 'Play'}>
+          {playing ? '❚❚' : '▶'}
+        </button>
+        <button className="bl-ctl" onClick={() => skip(10)} title="Forward ten seconds">
+          10 ▸▸
+        </button>
+        <button
+          className="bl-ctl"
+          onClick={() => {
+            command(muted ? 'unmute' : 'mute')
+            setMuted(!muted)
+          }}
+          title={muted ? 'Sound on' : 'Mute'}
+        >
+          {muted ? 'SOUND' : 'MUTE'}
+        </button>
+      </div>
+    </div>
+  )
+})
 
 /* --------------------------------------------------------------------- body */
 
@@ -180,22 +339,7 @@ const Body = memo(function Body({ blade }: { blade: Blade }) {
   if (blade.kind === 'embed' && blade.url) {
     const embed = embedUrl(blade.url)
     if (!embed) return <p className="bl-note">That video link could not be played.</p>
-    return (
-      <iframe
-        className="bl-frame"
-        src={embed}
-        // A player genuinely needs scripts and its own origin. Nothing that
-        // reaches the room the user is sitting in is granted.
-        sandbox="allow-scripts allow-same-origin allow-presentation"
-        allow="accelerometer; encrypted-media; picture-in-picture; fullscreen"
-        // Not no-referrer: YouTube and Vimeo refuse to play without knowing
-        // which site embeds them, and YouTube says so as "Error 153". This
-        // sends the origin alone (http://localhost:5173), never the path.
-        referrerPolicy="strict-origin-when-cross-origin"
-        allowFullScreen
-        title={blade.title}
-      />
-    )
+    return <VideoEmbed src={embed} title={blade.title} />
   }
 
   if (blade.kind === 'video' && blade.url) {
@@ -240,23 +384,89 @@ const Body = memo(function Body({ blade }: { blade: Blade }) {
 
 /* -------------------------------------------------------------------- card */
 
+/** Where a blade sits in the overview: a cell, as an offset from the centre. */
+type Tile = { x: number; y: number; w: number; h: number }
+
+/** Dragged this close to an edge (fraction of the screen), a blade snaps to it. */
+const SNAP_EDGE = 0.04
+type SnapZone = 'left' | 'right' | 'top' | null
+
+/** Tell the stack where a drag would snap, so it can show the outline. */
+const hintSnap = (zone: SnapZone) =>
+  window.dispatchEvent(new CustomEvent('blade-snap-hint', { detail: zone }))
+
+const zoneAt = (x: number, y: number): SnapZone =>
+  x < window.innerWidth * SNAP_EDGE ? 'left'
+  : x > window.innerWidth * (1 - SNAP_EDGE) ? 'right'
+  : y < window.innerHeight * SNAP_EDGE ? 'top'
+  : null
+
+/** How fast the pointer was moving at release, in pixels per millisecond. */
+type Fling = { vx: number; vy: number; kind: string }
+
+/** Release speed is read from this much of the drag just before letting go. */
+const FLING_WINDOW_MS = 160
+/** Faster than this sideways, by hand, and the blade is thrown away (px/ms). */
+const FLING_CLOSE = 2.2
+/** Slower than this and it just stops where it was let go. */
+const GLIDE_MIN = 0.35
+/** Speed kept per 16 ms of gliding. */
+const GLIDE_FRICTION = 0.93
+
+/**
+ * The fastest stretch of the recent drag. Peak rather than average, because a
+ * hand slows in the instant it opens to let go, and an average reads every
+ * flick as limp. Older than `now - 120ms` counts for nothing: a drag that
+ * stopped and then let go was not a throw.
+ */
+function peakVelocity(trail: { x: number; y: number; t: number }[], now: number) {
+  let best = { vx: 0, vy: 0 }
+  let top = 0
+  for (let i = 1; i < trail.length; i++) {
+    if (now - trail[i].t > 120) continue
+    const dt = Math.max(8, trail[i].t - trail[i - 1].t)
+    const vx = (trail[i].x - trail[i - 1].x) / dt
+    const vy = (trail[i].y - trail[i - 1].y) / dt
+    const sp = Math.hypot(vx, vy)
+    if (sp > top) {
+      top = sp
+      best = { vx, vy }
+    }
+  }
+  return best
+}
+
 function Card({
   blade,
   depth,
   focused,
   expanded,
+  tile,
+  exitDir,
   onFocus,
   onExpand,
   onClose,
+  onMinimise,
+  onPick,
+  onThrow,
 }: {
   blade: Blade
   /** 0 is front-most. Drives the offset and the dimming behind it. */
   depth: number
   focused: boolean
   expanded: boolean
+  /** Set while the overview is up: the cell this blade is laid out in. */
+  tile: Tile | null
+  /** Set when a swipe closed it: which way it flies off. */
+  exitDir: 'left' | 'right' | undefined
   onFocus: () => void
   onExpand: () => void
   onClose: () => void
+  onMinimise: () => void
+  /** Chosen from the overview. */
+  onPick: () => void
+  /** Flicked hard off the side of the screen: close it, flying that way. */
+  onThrow: (dir: 'left' | 'right') => void
 }) {
   /** Size the user has dragged this blade to, overriding the class preset. */
   const [size, setSize] = useState<{ w: number; h: number } | null>(null)
@@ -302,17 +512,30 @@ function Card({
   const grab = (
     e: React.PointerEvent,
     onMove: (dx: number, dy: number) => void,
+    /** Where the pointer was when it let go, and how fast it was going. */
+    onEnd?: (x: number, y: number, v: Fling) => void,
   ) => {
     e.preventDefault()
     e.stopPropagation()
+    stopGlide()
+    const kind = e.pointerType
+    const trail: { x: number; y: number; t: number }[] = []
     const sx = e.clientX
     const sy = e.clientY
     let baseX = sx
     let baseY = sy
     let dx = 0
     let dy = 0
+    let lastX = sx
+    let lastY = sy
 
     const move = (ev: PointerEvent) => {
+      lastX = ev.clientX
+      lastY = ev.clientY
+      const t = performance.now()
+      trail.push({ x: lastX, y: lastY, t })
+      while (trail.length && t - trail[0].t > FLING_WINDOW_MS) trail.shift()
+      if (onEnd) hintSnap(zoneAt(lastX, lastY))
       /**
        * Both hands pinching means this is not a drag.
        *
@@ -337,6 +560,10 @@ function Card({
       onMove(dx, dy)
     }
     const done = () => {
+      if (onEnd) {
+        hintSnap(null)
+        onEnd(lastX, lastY, { ...peakVelocity(trail, performance.now()), kind })
+      }
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', done)
       window.removeEventListener('pointercancel', done)
@@ -346,14 +573,81 @@ function Card({
     window.addEventListener('pointercancel', done)
   }
 
+  /**
+   * Let go of a dragged blade at the edge of the screen and it snaps there:
+   * left or right edge takes that half, the top edge takes the whole screen.
+   * Two blades side by side is the layout people actually want, and arranging
+   * it by hand to the pixel is not something a hand cursor is good at.
+   */
+  const snap = (x: number, y: number, v: Fling) => {
+    // A hard sideways flick by hand throws it away, even if it ends at an edge:
+    // snapping is a slow, deliberate drag, and a real flick always overshoots.
+    // Only for the hand: a quick mouse drag should never lose a blade.
+    if (v.kind === 'touch' && Math.abs(v.vx) > FLING_CLOSE && Math.abs(v.vx) > Math.abs(v.vy) * 1.5) {
+      onThrow(v.vx < 0 ? 'left' : 'right')
+      return
+    }
+    const zone = zoneAt(x, y)
+    if (!zone) {
+      // Anything gentler glides.
+      if (Math.hypot(v.vx, v.vy) > GLIDE_MIN) glide(v.vx, v.vy)
+      return
+    }
+    if (zone === 'top') {
+      setSize(null)
+      setPos({ x: 0, y: 0 })
+      onExpand()
+      return
+    }
+    const W = window.innerWidth
+    const H = window.innerHeight
+    // Clear of the title above and the dock below.
+    setSize({ w: W * 0.48, h: H * 0.8 })
+    setPos({ x: (zone === 'left' ? -1 : 1) * W * 0.25, y: -H * 0.02 })
+  }
+
+  /**
+   * Let go mid-swing and the blade keeps moving, slowing as it goes, and
+   * bounces softly off the screen edges. Borrowed from holo-gestures (MIT,
+   * Zubair Trabzada): positioning a blade by hand is far easier as a toss
+   * than as a drag that has to stop on the exact pixel.
+   */
+  const glideRaf = useRef(0)
+  const stopGlide = () => cancelAnimationFrame(glideRaf.current)
+  useEffect(() => stopGlide, [])
+  const glide = (vx0: number, vy0: number) => {
+    stopGlide()
+    let vx = vx0
+    let vy = vy0
+    let last = performance.now()
+    const step = (now: number) => {
+      const dt = Math.min(40, now - last)
+      last = now
+      const r = shell.current?.getBoundingClientRect()
+      if (r) {
+        const W = window.innerWidth
+        const H = window.innerHeight
+        // Keep at least most of it on screen.
+        if ((r.left < -r.width * 0.3 && vx < 0) || (r.right > W + r.width * 0.3 && vx > 0)) vx = -vx * 0.4
+        if ((r.top < 0 && vy < 0) || (r.bottom > H + r.height * 0.2 && vy > 0)) vy = -vy * 0.4
+      }
+      setPos((p) => ({ x: p.x + vx * dt, y: p.y + vy * dt }))
+      const k = Math.pow(GLIDE_FRICTION, dt / 16)
+      vx *= k
+      vy *= k
+      if (Math.hypot(vx, vy) > 0.02) glideRaf.current = requestAnimationFrame(step)
+    }
+    glideRaf.current = requestAnimationFrame(step)
+  }
+
   const onHeadDown = (e: React.PointerEvent) => {
     // Buttons live in the header too; starting a drag from one would mean the
     // click never lands.
     if ((e.target as HTMLElement).closest('button')) return
     if (!focused) onFocus()
-    if (expanded) return
+    if (expanded || tile) return
     const from = { ...pos }
-    grab(e, (dx, dy) => setPos({ x: from.x + dx, y: from.y + dy }))
+    grab(e, (dx, dy) => setPos({ x: from.x + dx, y: from.y + dy }), snap)
   }
 
   /**
@@ -373,9 +667,9 @@ function Card({
   const onBodyDown = (e: React.PointerEvent) => {
     if (e.pointerType !== 'touch') return
     if (!focused) onFocus()
-    if (expanded) return
+    if (expanded || tile) return
     const from = { ...pos }
-    grab(e, (dx, dy) => setPos({ x: from.x + dx, y: from.y + dy }))
+    grab(e, (dx, dy) => setPos({ x: from.x + dx, y: from.y + dy }), snap)
   }
 
   /**
@@ -409,18 +703,19 @@ function Card({
   }, [focused])
 
   /**
-   * Frame the blade with both hands to resize it.
+   * Two fists, pulled apart, to resize the blade.
    *
-   * Index up, thumb out, one hand either side — the rectangle people already
-   * mime when they frame a shot. Pull the corners apart and the blade grows;
-   * bring them together and it shrinks; lean toward the camera and it grows
-   * too, because leaning in enlarges everything about the hands including the
-   * gap between them.
+   * Close both hands and move them apart and the blade grows; bring them
+   * together and it shrinks; lean toward the camera and it grows too, because
+   * leaning in enlarges everything about the hands including the gap between
+   * them.
    *
-   * This replaced a two-handed pinch, which read well on paper and collided
-   * badly in practice: a pinch is how you GRAB a blade, so two of them meant
-   * two hands each trying to pick something up while also asking to resize it.
-   * The framing pose collides with nothing, which is most of why it is right.
+   * This is the third gesture in the slot. A two-handed pinch came first and
+   * collided with grabbing, since a pinch is how you pick a blade up. Framing
+   * an L-corner with each hand replaced it and collided with nothing, but it
+   * only reads when both palms face the lens, which is not where hands sit
+   * when you are pulling something wider. A closed hand looks closed from
+   * every angle.
    *
    * The measurement arrives as a plain distance; that it means a resize is
    * decided here. Only the focused blade, and never while expanded, where the
@@ -432,7 +727,7 @@ function Card({
     let from: { span: number; w: number; h: number } | null = null
     const tick = () => {
       raf = requestAnimationFrame(tick)
-      const span = frameSpan()
+      const span = fistSpan()
       if (span === null) {
         from = null
         return
@@ -440,7 +735,7 @@ function Card({
       const box = shell.current?.getBoundingClientRect()
       if (!box) return
       if (!from) {
-        // Both hands have just closed. Anchor on the size as it is now.
+        // Both fists have just appeared. Anchor on the size as it is now.
         from = { span, w: box.width, h: box.height }
         return
       }
@@ -455,6 +750,20 @@ function Card({
     tick()
     return () => cancelAnimationFrame(raf)
   }, [focused, expanded])
+
+  /**
+   * The overview scales each blade to fit its cell, so it needs the blade's
+   * own size — offsetWidth, which transforms do not touch, so the scale being
+   * applied cannot feed back into the measurement of what to scale.
+   */
+  const [natural, setNatural] = useState<{ w: number; h: number } | null>(null)
+  useLayoutEffect(() => {
+    if (!tile || !shell.current) return
+    setNatural({ w: shell.current.offsetWidth, h: shell.current.offsetHeight })
+  }, [tile, size])
+
+  const tileScale =
+    tile && natural ? Math.min(tile.w / natural.w, tile.h / natural.h, 1) * 0.92 : 1
 
   const onGrip = (e: React.PointerEvent) => {
     const box = shell.current?.getBoundingClientRect()
@@ -490,30 +799,49 @@ function Card({
     <motion.div
       className="bl-slot"
       initial={{ opacity: 0, y: 26, scale: 0.96, filter: 'blur(6px)' }}
-      animate={{
-        opacity: expanded || depth === 0 ? 1 : Math.max(0.3, 1 - depth * 0.24),
-        y: expanded ? 0 : depth * -13,
-        x: expanded ? 0 : depth * 15,
-        scale: expanded ? 1 : 1 - depth * 0.035,
-        filter: depth === 0 || expanded ? 'blur(0px)' : `blur(${depth * 0.7}px)`,
-      }}
-      exit={{ opacity: 0, y: 18, filter: 'blur(8px)', transition: { duration: 0.28 } }}
+      animate={
+        tile
+          ? { opacity: 1, x: tile.x, y: tile.y, scale: tileScale, filter: 'blur(0px)' }
+          : {
+              opacity: expanded || depth === 0 ? 1 : Math.max(0.3, 1 - depth * 0.24),
+              y: expanded ? 0 : depth * -13,
+              x: expanded ? 0 : depth * 15,
+              scale: expanded ? 1 : 1 - depth * 0.035,
+              filter: depth === 0 || expanded ? 'blur(0px)' : `blur(${depth * 0.7}px)`,
+            }
+      }
+      // Swiped away: it leaves the way the hand threw it.
+      exit={
+        exitDir
+          ? {
+              opacity: 0,
+              x: (exitDir === 'left' ? -1 : 1) * window.innerWidth * 0.7,
+              rotate: exitDir === 'left' ? -8 : 8,
+              filter: 'blur(4px)',
+              transition: { duration: 0.32, ease: [0.4, 0, 1, 1] },
+            }
+          : { opacity: 0, y: 18, scaleY: 0.02, filter: 'blur(8px)', transition: { duration: 0.28 } }
+      }
       transition={{ type: 'spring', stiffness: 260, damping: 30 }}
-      style={{ zIndex: expanded ? 60 : 40 - depth }}
+      style={{ zIndex: expanded ? 60 : tile ? 40 : 40 - depth }}
     >
       <motion.section
         ref={shell}
+        data-blade={blade.id}
         className={
           `bl bl-${blade.size}` +
           (expanded ? ' bl-expanded' : '') +
-          (focused ? ' bl-front' : '')
+          (focused && !tile ? ' bl-front' : '') +
+          (tile ? ' bl-tile' : '')
         }
         // Position and size are ours rather than framer's — see `grab` above for
         // why. Applied as a plain transform because the depth animation lives on
         // the slot wrapper, so nothing is competing for this element's own one.
         style={{
           ...(size && !expanded ? { width: size.w, height: size.h } : null),
-          transform: expanded ? undefined : `translate(${pos.x}px, ${pos.y}px)`,
+          // In the overview the tile decides where it is; its own drag offset
+          // waits until it is back in the stack.
+          transform: expanded || tile ? undefined : `translate(${pos.x}px, ${pos.y}px)`,
         }}
         // pointerdown, not mousedown: a hand dispatches PointerEvents, and a
         // mousedown handler simply never hears them. Focusing a blade by pinch
@@ -526,6 +854,8 @@ function Card({
         <span className="pk pk-tr" />
         <span className="pk pk-bl" />
         <span className="pk pk-br" />
+        <span className="bl-scan" aria-hidden="true" />
+        <span className="bl-trace" aria-hidden="true" />
 
         <header className="bl-head" onPointerDown={onHeadDown}>
           <span className="bl-title">{blade.title}</span>
@@ -544,6 +874,16 @@ function Card({
                 ⤾
               </button>
             )}
+            <button
+              className="bl-btn"
+              onClick={(e) => {
+                e.stopPropagation()
+                onMinimise()
+              }}
+              title="Hide in the dock (H)"
+            >
+              –
+            </button>
             <button
               className="bl-btn"
               onClick={(e) => {
@@ -572,7 +912,22 @@ function Card({
         </div>
 
         {/* Resize grip. Absent while expanded, where the size is the point. */}
-        {!expanded && <span className="bl-grip" onPointerDown={onGrip} title="Drag to resize" />}
+        {!expanded && !tile && <span className="bl-grip" onPointerDown={onGrip} title="Drag to resize" />}
+
+        {/* In the overview the whole tile is one button: pick this one. A
+            cover rather than a handler on the blade, so a press cannot land
+            on a link or an iframe inside it instead. */}
+        {tile && (
+          <button
+            className="bl-pick"
+            onPointerDown={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              onPick()
+            }}
+            title={`Open ${blade.title}`}
+          />
+        )}
       </motion.section>
     </motion.div>
   )
@@ -580,13 +935,57 @@ function Card({
 
 /* ------------------------------------------------------------------- stack */
 
+/** Overview cells, as offsets from the centre of the screen. */
+function tilesFor(n: number): Tile[] {
+  const W = window.innerWidth
+  const H = window.innerHeight
+  const cols = Math.ceil(Math.sqrt(n * (W / H) / 1.4))
+  const rows = Math.ceil(n / cols)
+  // Leave room for the rails at the sides and the dock at the bottom.
+  const areaW = W * 0.86
+  const areaH = H * 0.74
+  const w = areaW / cols
+  const h = areaH / rows
+  return Array.from({ length: n }, (_, i) => {
+    const r = Math.floor(i / cols)
+    // The last row, if short, is centred rather than left-aligned.
+    const inRow = r === rows - 1 ? n - r * cols : cols
+    const c = i % cols
+    return {
+      x: (c - (inRow - 1) / 2) * w,
+      y: (r - (rows - 1) / 2) * h - H * 0.03,
+      w,
+      h,
+    }
+  })
+}
+
 export function Blades() {
   const blades = useStore((s) => s.blades)
   const focusedBlade = useStore((s) => s.focusedBlade)
   const expandedBlade = useStore((s) => s.expandedBlade)
+  const overview = useStore((s) => s.bladeOverview)
   const focusBlade = useStore((s) => s.focusBlade)
   const expandBlade = useStore((s) => s.expandBlade)
   const closeBlade = useStore((s) => s.closeBlade)
+  const minimiseBlade = useStore((s) => s.minimiseBlade)
+  const closeAll = useStore((s) => s.closeAllBlades)
+  const setOverview = useStore((s) => s.setBladeOverview)
+
+  /** Which way each swiped blade is leaving, read by its exit animation. */
+  const [exitDirs, setExitDirs] = useState<Record<string, 'left' | 'right'>>({})
+  const [snapZone, setSnapZone] = useState<SnapZone>(null)
+
+  // Forget exit directions once their blades are gone.
+  useEffect(() => {
+    setExitDirs((d) => {
+      const alive = Object.keys(d).filter((id) => blades.some((b) => b.id === id))
+      return alive.length === Object.keys(d).length ? d : Object.fromEntries(alive.map((id) => [id, d[id]]))
+    })
+  }, [blades])
+
+  const shown = useMemo(() => blades.filter((b) => !b.minimised), [blades])
+  const docked = useMemo(() => blades.filter((b) => b.minimised), [blades])
 
   /**
    * Newest first, then whichever the user pulled forward lifted to the front.
@@ -596,14 +995,14 @@ export function Blades() {
    * that" a meaningful thing to ask for.
    */
   const ordered = useMemo(() => {
-    const newestFirst = [...blades].reverse()
+    const newestFirst = [...shown].reverse()
     if (!focusedBlade) return newestFirst
     const hit = newestFirst.findIndex((b) => b.id === focusedBlade)
     if (hit <= 0) return newestFirst
     const copy = [...newestFirst]
     const [lifted] = copy.splice(hit, 1)
     return [lifted, ...copy]
-  }, [blades, focusedBlade])
+  }, [shown, focusedBlade])
 
   const front = ordered[0]
 
@@ -617,8 +1016,42 @@ export function Blades() {
     [ordered, front, focusBlade],
   )
 
-  // Bound here rather than in App, and only while something is open, so E and X
-  // are free for anything else the moment the last blade closes.
+  /** Close one, thrown the way it was swiped. */
+  const throwAway = useCallback(
+    (id: string, dir: 'left' | 'right') => {
+      setExitDirs((d) => ({ ...d, [id]: dir }))
+      // A frame later, so the card has re-rendered with its exit direction
+      // before AnimatePresence takes its last snapshot of it.
+      requestAnimationFrame(() => closeBlade(id))
+    },
+    [closeBlade],
+  )
+
+  /**
+   * Swipe an open hand across a blade to throw it away. A swipe that starts
+   * somewhere else flips through the stack instead — left for the next one,
+   * right for the one before.
+   */
+  useEffect(() => {
+    const onSwipe = (e: Event) => {
+      const { dir, x, y } = (e as CustomEvent<SwipeDetail>).detail
+      const hit = document.elementFromPoint(x, y)?.closest('[data-blade]')
+      const id = hit?.getAttribute('data-blade')
+      if (id) throwAway(id, dir)
+      else if (!overview) cycle(dir === 'left' ? 1 : -1)
+    }
+    window.addEventListener('hand-swipe', onSwipe)
+    return () => window.removeEventListener('hand-swipe', onSwipe)
+  }, [throwAway, cycle, overview])
+
+  useEffect(() => {
+    const onHint = (e: Event) => setSnapZone((e as CustomEvent<SnapZone>).detail)
+    window.addEventListener('blade-snap-hint', onHint)
+    return () => window.removeEventListener('blade-snap-hint', onHint)
+  }, [])
+
+  // Bound here rather than in App, and only while something is open, so these
+  // keys are free for anything else the moment the last blade closes.
   const live = useRef(false)
   live.current = blades.length > 0
 
@@ -632,9 +1065,21 @@ export function Blades() {
       if (e.key === 'e') {
         e.preventDefault()
         expandBlade(expandedBlade ? null : (front?.id ?? null))
+      } else if (e.key === 'X') {
+        e.preventDefault()
+        closeAll()
       } else if (e.key === 'x') {
         e.preventDefault()
         if (front) closeBlade(front.id)
+      } else if (e.key === 'h') {
+        e.preventDefault()
+        if (front) minimiseBlade(front.id, true)
+      } else if (e.key === 'o') {
+        e.preventDefault()
+        setOverview(!overview && shown.length > 1)
+      } else if (e.key === 'Escape' && overview) {
+        e.preventDefault()
+        setOverview(false)
       } else if (e.key === ']') {
         e.preventDefault()
         cycle(1)
@@ -645,12 +1090,29 @@ export function Blades() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [front, expandedBlade, expandBlade, closeBlade, cycle])
+  }, [front, expandedBlade, expandBlade, closeBlade, closeAll, minimiseBlade, setOverview, overview, shown, cycle])
 
   if (!blades.length) return null
 
+  // In the overview, laid out oldest to newest, reading order.
+  const tiles = overview ? tilesFor(shown.length) : []
+  const tileOf = (id: string) => {
+    const at = shown.findIndex((b) => b.id === id)
+    return overview && at !== -1 ? tiles[at] : null
+  }
+
   return (
-    <div className={`blades-stack${expandedBlade ? ' blades-stack-full' : ''}`}>
+    <div
+      className={
+        'blades-stack' +
+        (expandedBlade ? ' blades-stack-full' : '') +
+        (overview ? ' blades-stack-overview' : '')
+      }
+    >
+      {snapZone && <div className={`bl-snap-hint bl-snap-${snapZone}`} />}
+      {/* Behind the tiles: dims the rest, and a press on it backs out. */}
+      {overview && <div className="bl-backdrop" onPointerDown={() => setOverview(false)} />}
+
       <AnimatePresence>
         {ordered.map((blade, i) => {
           const expanded = expandedBlade === blade.id
@@ -664,17 +1126,55 @@ export function Blades() {
               depth={expanded ? 0 : i}
               focused={blade.id === front?.id}
               expanded={expanded}
+              tile={tileOf(blade.id)}
+              exitDir={exitDirs[blade.id]}
               onFocus={() => focusBlade(blade.id)}
               onExpand={() => expandBlade(expanded ? null : blade.id)}
               onClose={() => closeBlade(blade.id)}
+              onMinimise={() => minimiseBlade(blade.id, true)}
+              onThrow={(dir) => throwAway(blade.id, dir)}
+              onPick={() => {
+                focusBlade(blade.id)
+                setOverview(false)
+              }}
             />
           )
         })}
       </AnimatePresence>
 
-      {blades.length > 1 && !expandedBlade && (
-        <div className="bl-hint">
-          <kbd>[</kbd> <kbd>]</kbd> cycle · <kbd>E</kbd> full · <kbd>X</kbd> close
+      {!expandedBlade && (
+        <div className="bl-dock">
+          {shown.length > 1 && (
+            <button
+              className={`bl-dock-btn${overview ? ' on' : ''}`}
+              onClick={() => setOverview(!overview)}
+              title="See them all (O)"
+            >
+              ▦ {overview ? 'back' : 'all'}
+            </button>
+          )}
+          <button className="bl-dock-btn" onClick={closeAll} title="Close every blade (Shift X)">
+            ✕ clear
+          </button>
+          {docked.map((b) => (
+            <button
+              key={b.id}
+              className="bl-chip"
+              onClick={() => minimiseBlade(b.id, false)}
+              title={`Bring back ${b.title}`}
+            >
+              <span className="bl-chip-dot" />
+              {b.title}
+            </button>
+          ))}
+          <span className="bl-dock-keys">
+            {shown.length > 1 && (
+              <>
+                <kbd>[</kbd> <kbd>]</kbd> cycle ·{' '}
+              </>
+            )}
+            <kbd>E</kbd> full · <kbd>H</kbd> hide · <kbd>X</kbd> close
+          </span>
         </div>
       )}
     </div>

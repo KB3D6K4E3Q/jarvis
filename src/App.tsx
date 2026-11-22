@@ -616,6 +616,43 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase])
 
+  // -- held gestures ---------------------------------------------------------
+
+  /**
+   * Three poses that talk to him rather than to the screen.
+   *
+   *   open palm, held still   stop. He stops speaking or thinking, and listens.
+   *   thumbs up, held         "yes" — the answer to "shall I…?"
+   *   thumbs down, held       "no"
+   *
+   * Only while he is awake. Asleep, a thumbs up is somebody approving of
+   * something on television. The palm acts only when there is something to
+   * stop, because an open hand is also how you let go of a blade, and letting
+   * go must not also tell him to stop listening.
+   */
+  useEffect(() => {
+    const onHold = (e: Event) => {
+      const { gesture } = (e as CustomEvent<hands.HoldDetail>).detail
+      const st = store.getState()
+      const phase = st.phase
+      if (phase === 'offline' || phase === 'boot' || phase === 'dormant' || phase === 'waking') return
+      const busy = phase === 'thinking' || phase === 'tooling' || phase === 'speaking'
+      if (gesture === 'palm') {
+        if (!busy) return
+        onSpeechStart()
+        listen(AWAIT_SPEECH_MS)
+        return
+      }
+      const answer = gesture === 'thumbs-up' ? 'Yes, go ahead.' : "No, don't."
+      sfx.play('listen')
+      if (busy) onSpeechStart()
+      void respond(answer)
+    }
+    window.addEventListener('hand-hold', onHold)
+    return () => window.removeEventListener('hand-hold', onHold)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // -- level pump + keys ----------------------------------------------------
 
   useEffect(() => {
