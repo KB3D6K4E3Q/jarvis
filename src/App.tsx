@@ -3,7 +3,7 @@ import { Scene } from './scene/Scene'
 import { Hud } from './ui/Hud'
 import { Dive } from './ui/Dive'
 import { dive, clamp01 } from './lib/dive'
-import { Boot } from './ui/Boot'
+import { Boot, BOOT_MS } from './ui/Boot'
 import { Ignition } from './ui/Ignition'
 import { Diagnostics } from './ui/Diagnostics'
 import { useStore } from './store'
@@ -554,11 +554,19 @@ export default function App() {
       }, 200)
     }
 
-    // Long enough for the four-beat start-up sequence in Boot.tsx to play —
-    // status bar, rings, suit schematic, reactor power-up — before the live
-    // interface takes over. Kept a touch under the boot cue so the music is
-    // still rising as the reactor lands.
-    await new Promise((r) => setTimeout(r, 9200)) // boot sequence
+    // The four-beat start-up sequence in Boot.tsx (status bar, rings, suit
+    // schematic, reactor power-up) and everything JARVIS needs in order to
+    // listen now run side by side. They used to run one after the other, so
+    // every start sat through the whole animation and then the set-up too.
+    // The voice callbacks all ignore the boot phase, so a loop that is ready
+    // before the animation ends simply waits for 'dormant'.
+    const bootShown = new Promise((r) => setTimeout(r, BOOT_MS))
+    await Promise.all([bootShown, getReadyToListen(warming)])
+
+    store.getState().setPhase('dormant')
+  }
+
+  const getReadyToListen = async (warming: Promise<unknown>) => {
     await warming
     store.getState().setConnected(connectedLabels())
 
@@ -592,8 +600,6 @@ export default function App() {
       onUtterance,
       onError: onVoiceError,
     })
-
-    store.getState().setPhase('dormant')
   }
 
   // -- clap to start --------------------------------------------------------

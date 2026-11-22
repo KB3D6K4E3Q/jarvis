@@ -19,9 +19,21 @@ import { useStore } from '../store'
  * — no images to load, nothing that can arrive late and stall the first beat.
  */
 
-/** The stage boundaries, in milliseconds from power-on. `done` is when the
- *  overlay dissolves; App owns the actual hand-off, this is only for pacing. */
-const T = { rings: 2600, suit: 5200, reactor: 7200 }
+/**
+ * The stage boundaries, in milliseconds from power-on.
+ *
+ * Tightened from a 9.2 s sequence: it was three quarters of the time between a
+ * clap and JARVIS listening, and every start paid it. The four beats are all
+ * still there, just quicker, and the reactor still lands as the overlay goes.
+ */
+const T = { rings: 1100, suit: 2100, reactor: 2900 }
+/** How long the reactor takes to light fully in beat 4. */
+const GLOW_MS = 700
+/**
+ * The whole sequence. App waits this long (and for its own set-up, which now
+ * runs alongside) before handing over to the live interface.
+ */
+export const BOOT_MS = 3800
 
 const LOG = [
   'MOUNT F:/BACKUP/GHOST (HIDDEN)',
@@ -126,17 +138,17 @@ function Rings({ reduced }: { reduced: boolean }) {
       strokeWidth={w}
       initial={reduced ? { opacity: 1 } : { opacity: 0, rotate: -40, scale: 1.15 }}
       animate={{ opacity: 1, rotate: 0, scale: 1 }}
-      transition={{ duration: 0.7, delay, ease }}
+      transition={{ duration: 0.45, delay, ease }}
     />
   )
   return (
     <svg className="boot-rings" viewBox="-160 -160 320 320">
       <g>
         {ring(150, 0.0, '3 6')}
-        {ring(128, 0.08, '40 8 12 8', 1.4)}
-        {ring(104, 0.16, '2 4')}
-        {ring(84, 0.24, '30 6 6 6', 1.6)}
-        {ring(60, 0.34, '1 3')}
+        {ring(128, 0.05, '40 8 12 8', 1.4)}
+        {ring(104, 0.1, '2 4')}
+        {ring(84, 0.15, '30 6 6 6', 1.6)}
+        {ring(60, 0.2, '1 3')}
       </g>
       <motion.text
         x="0"
@@ -144,7 +156,7 @@ function Rings({ reduced }: { reduced: boolean }) {
         className="boot-name"
         initial={reduced ? { opacity: 1 } : { opacity: 0, letterSpacing: '1.4em' }}
         animate={{ opacity: 1, letterSpacing: '0.42em' }}
-        transition={{ duration: 0.7, delay: 0.5, ease }}
+        transition={{ duration: 0.45, delay: 0.3, ease }}
       >
         J.A.R.V.I.S
       </motion.text>
@@ -166,7 +178,7 @@ function Suit({ reduced }: { reduced: boolean }) {
         className="boot-suit-fig"
         initial={reduced ? { opacity: 1 } : { opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.6 }}
+        transition={{ duration: 0.3 }}
       >
         <motion.path
           className="boot-wire"
@@ -177,7 +189,7 @@ function Suit({ reduced }: { reduced: boolean }) {
              C-17,-108 -11,-118 0,-118 Z"
           initial={reduced ? { pathLength: 1, opacity: 1 } : { pathLength: 0, opacity: 0 }}
           animate={{ pathLength: 1, opacity: 1 }}
-          transition={{ duration: 1.4, ease: 'easeInOut' }}
+          transition={{ duration: 0.7, ease: 'easeInOut' }}
         />
         <path className="boot-wire boot-wire-dim" d="M-9,-104 L9,-104 M-8,-96 L8,-96 M0,-92 L0,-84" />
         <circle className="boot-wire" cx="0" cy="-40" r="9" />
@@ -190,7 +202,7 @@ function Suit({ reduced }: { reduced: boolean }) {
           className="boot-callout"
           initial={reduced ? { opacity: 1 } : { opacity: 0, x: x > 0 ? 20 : -20 }}
           animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.5, delay: 0.3 + i * 0.12 }}
+          transition={{ duration: 0.35, delay: 0.15 + i * 0.08 }}
         >
           <circle className="boot-wire" cx={x} cy="-10" r="26" strokeDasharray="30 6 6 6" />
           <circle className="boot-wire boot-wire-dim" cx={x} cy="-10" r="15" />
@@ -211,7 +223,7 @@ function Suit({ reduced }: { reduced: boolean }) {
 
 /** The triangular chest reactor, lighting from a dim outline to full glow. */
 function Reactor({ reduced, t }: { reduced: boolean; t: number }) {
-  const glow = reduced ? 1 : Math.min(1, Math.max(0, t / 1400))
+  const glow = reduced ? 1 : Math.min(1, Math.max(0, t / GLOW_MS))
   const seg = Array.from({ length: 16 }, (_, i) => i)
   return (
     <svg
