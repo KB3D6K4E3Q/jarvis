@@ -92,7 +92,7 @@ the brain and the hands.
   │  "Hey Jarvis" wake word            │        │  Node · bridge/server.mjs        │
   │  local VAD  →  speech to text      │   ws   │  Claude Agent SDK                │
   │  reactor UI (Three.js + GLSL)      │◄─────► │   = Claude Code, headless        │
-  │  text to speech                    │  8787  │  spawns your MCP servers         │
+  │  text to speech                    │  8788  │  spawns your MCP servers         │
   │  heads-up display                  │        │  permission gate (decideTool)    │
   └────────────────────────────────────┘        └──────────────────────────────────┘
 ```
@@ -101,7 +101,7 @@ Everything you see and hear happens in the browser. The bridge is a single Node
 process (`bridge/server.mjs`) that runs the **Claude Agent SDK**
 (`@anthropic-ai/claude-agent-sdk`) — this spawns the real `claude` CLI as a child
 process, so **the brain literally is Claude Code, headless.** They talk over a
-WebSocket (plus a few HTTP endpoints) on `ws://localhost:8787`.
+WebSocket (plus a few HTTP endpoints) on `ws://localhost:8788`.
 
 **Why a bridge at all?** A browser tab cannot spawn the local stdio MCP servers —
 `higgsfield`, `elevenlabs`, `android`, `playwright`, `exa`, `serper`, and the
@@ -228,7 +228,7 @@ Everything is optional in bridge mode. Frontend settings live in `.env.local`
 
 | Variable | Default | Effect |
 |---|---|---|
-| `JARVIS_BRIDGE_PORT` | `8787` | Port for the WebSocket + HTTP endpoints |
+| `JARVIS_BRIDGE_PORT` | `8788` | Port for the WebSocket + HTTP endpoints |
 | `JARVIS_BRIDGE_HOST` | `127.0.0.1` | Interface to listen on. Any other address puts the agent on your network |
 | `JARVIS_ALLOWED_HOSTS` | none | Extra hostnames the bridge answers to; a request for any other name gets a 403 |
 | `JARVIS_MODEL` | `claude-opus-5` | Model to run |
@@ -315,7 +315,7 @@ Press **T** for a one-line audio self-test.
 window** (not an embedded preview), and you must have **allowed the microphone**.
 
 **Bridge not reachable.** Check that `npm run bridge` is still running in its
-terminal, and that nothing else is holding port `8787`. If the port is taken,
+terminal, and that nothing else is holding port `8788`. If the port is taken,
 the bridge says so in one line at startup and exits. It listens on `127.0.0.1`
 only. Reaching it from another machine takes `JARVIS_BRIDGE_HOST` and
 `JARVIS_ALLOWED_HOSTS`, and your own authentication in front of it first.

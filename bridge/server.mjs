@@ -31,6 +31,7 @@ import { readFile, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
 import { probeUrl, renderPage } from './page.mjs'
+import { BRIDGE_PORT } from './port.mjs'
 import {
   builtinTools,
   checkToolUse,
@@ -39,7 +40,7 @@ import {
   fileRoots,
 } from './policy.mjs'
 
-const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
+const PORT = BRIDGE_PORT
 
 /**
  * Which interface to listen on. Loopback, unless you say otherwise.
@@ -75,7 +76,7 @@ process.on('unhandledRejection', (err) => {
  * A WebSocket handshake is not subject to the same-origin policy: the browser
  * sends it on behalf of whatever page asked, no preflight stands in the way,
  * and the page reads every byte that comes back. Without a check here, any tab
- * the user happens to have open could open a socket to ws://localhost:8787,
+ * the user happens to have open could open a socket to ws://localhost:8788,
  * drive the agent with every MCP server on this machine, and read back every
  * token and panel. The Origin header is the only thing that separates our own
  * dev server from someone else's page, so it is checked explicitly.
@@ -122,7 +123,7 @@ function originAllowed(origin) {
  *
  * The Origin check has one gap, and it is DNS rebinding. A page on
  * attacker.example can re-point its own name at 127.0.0.1 and then fetch
- * `http://attacker.example:8787/file?...` — a same-origin GET, which carries no
+ * `http://attacker.example:8788/file?...` — a same-origin GET, which carries no
  * Origin header at all and so sails through the `!origin` branch above. What
  * it cannot forge is the Host header: the browser sends the name it thinks it
  * is talking to. So anything addressed to a name other than loopback is

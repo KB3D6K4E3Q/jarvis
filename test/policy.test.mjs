@@ -96,7 +96,7 @@ test('writes are confined too, when writes are on', () => {
 
 test('WebFetch cannot be pointed at the LAN, loopback or cloud metadata', () => {
   assert.equal(allowed('WebFetch', { url: 'https://example.com/a' }), true)
-  assert.equal(allowed('WebFetch', { url: 'http://127.0.0.1:8787/file?path=/x.png' }), false)
+  assert.equal(allowed('WebFetch', { url: 'http://127.0.0.1:8788/file?path=/x.png' }), false)
   assert.equal(allowed('WebFetch', { url: 'http://169.254.169.254/latest/meta-data/' }), false)
   assert.equal(allowed('WebFetch', { url: 'http://192.168.1.1/' }), false)
   assert.equal(allowed('WebFetch', { url: 'http://printer.local/' }), false)

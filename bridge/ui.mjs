@@ -1,5 +1,6 @@
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
+import { BRIDGE_PORT } from './port.mjs'
 
 /**
  * The `ui_*` tools — JARVIS's control of his own face.
@@ -411,7 +412,7 @@ export function uiServer(emit) {
         // Refused rather than emitted, because the page's CSP drops it silently
         // — the model would believe the image is up and describe something the
         // user cannot see. The one exception is the bridge's own /file endpoint.
-        if (/^https?:\/\//i.test(src) && !/^http:\/\/localhost:8787\//i.test(src)) {
+        if (/^https?:\/\//i.test(src) && !src.startsWith(`http://localhost:${BRIDGE_PORT}/`)) {
           return refuse(
             'Not added: remote images are blocked by the page. Orbit a file on ' +
               'this machine instead — an absolute path or a file:/// URL to ' +

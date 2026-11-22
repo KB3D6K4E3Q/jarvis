@@ -41,8 +41,13 @@ if ! command -v node >/dev/null 2>&1; then
   [ -d /opt/homebrew/bin ] && export PATH="/opt/homebrew/bin:$PATH"
 fi
 
+# The brain's port. Must match bridge/port.mjs (and VITE_BRIDGE_URL if you
+# change it). Not 8787: other local tools, such as the Headroom proxy, use it.
+BRIDGE_PORT="${JARVIS_BRIDGE_PORT:-8788}"
+FACE_PORT=5173
+
 listening() { lsof -nP -iTCP:"$1" -sTCP:LISTEN -t >/dev/null 2>&1; }
-running() { listening 8787 && listening 5173; }
+running() { listening "$BRIDGE_PORT" && listening "$FACE_PORT"; }
 
 notify() {
   osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "JARVIS"' -e 'end run' "$1" >/dev/null 2>&1 || true
@@ -134,12 +139,17 @@ stop() {
   fi
   # Anything still holding JARVIS's ports (e.g. started with `npm start`).
   for _ in 1 2 3 4 5 6; do
-    running || listening 8787 || listening 5173 || break
+    running || listening "$BRIDGE_PORT" || listening "$FACE_PORT" || break
     sleep 0.5
   done
-  for port in 8787 5173; do
-    pids=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null)
-    [ -n "$pids" ] && kill -TERM $pids 2>/dev/null
+  # Node processes only: the port can belong to some other program entirely,
+  # and stopping JARVIS must never take that down with it.
+  for port in "$BRIDGE_PORT" "$FACE_PORT"; do
+    for pid in $(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null); do
+      case "$(ps -o comm= -p "$pid" 2>/dev/null)" in
+        *node*) kill -TERM "$pid" 2>/dev/null ;;
+      esac
+    done
   done
   close_face
   restore_mic
