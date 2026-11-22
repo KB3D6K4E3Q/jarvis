@@ -160,6 +160,9 @@ export function decideTool(name, allowWrites = false) {
     // whole server in the default read-only mode, which is what it is for.
     if (server === 'jarvis_skills') return true
 
+    // Memory writes only to its own file in JARVIS's state folder.
+    if (server === 'jarvis_memory') return true
+
     const tool = mcpToolOf(name)
     if (EFFECTFUL_VERB.test(tool) && !VETO_EXEMPT.has(`${server}__${tool}`)) {
       return allowWrites

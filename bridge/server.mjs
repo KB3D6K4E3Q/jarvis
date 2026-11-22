@@ -22,6 +22,7 @@ import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { customSkillsPrompt, onAnnounce, PROMPT_SKILLS, seedSkills, skillsServer, unmuteMic } from './skills.mjs'
+import { conversationMemory, memoryFile, memoryPrompt, memoryServer, openConversations } from './memory.mjs'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { homedir, tmpdir } from 'node:os'
@@ -296,6 +297,8 @@ mkdirSync(WORKSPACE, { recursive: true })
  * ~/.jarvis, so nothing a skill writes lands anywhere else on disk.
  */
 const SKILLS_STATE = join(WORKSPACE, '..', 'state')
+const MEMORY = !DISABLED.has('memory')
+const MEMORY_FILE = memoryFile(SKILLS_STATE)
 const SKILLS_DIR = resolvePath(
   process.env.JARVIS_SKILLS_DIR ?? join(homedir(), '.jarvis', 'skills'),
 )
@@ -310,12 +313,26 @@ function shutdownJarvis() {
   if (shuttingDown) return
   shuttingDown = true
   console.log('[jarvis] shutting down on request')
+  // Note the conversation before going. The note is written by a process of
+  // its own, so it survives jarvis.sh stop ending this one.
+  for (const c of openConversations) void c.end()
   const script = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'scripts', 'jarvis.sh')
   try {
     spawn('/bin/bash', [script, 'stop'], { detached: true, stdio: 'ignore' }).unref()
   } catch {}
   // If the script could not run, at least this process goes.
   setTimeout(() => process.exit(0), 4000).unref()
+}
+
+/**
+ * Stopped from outside (the Stop Jarvis app, Ctrl-C in npm start): hand any
+ * open conversation to the note writer, which runs on after this exits.
+ */
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.once(signal, () => {
+    for (const c of openConversations) void c.end()
+    process.exit(0)
+  })
 }
 
 const TOOL_ROOTS = fileRoots({
@@ -1205,6 +1222,10 @@ wss.on('connection', (socket) => {
     if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg))
   }
 
+  // What was said, kept so it can be noted in memory when the talking stops.
+  const convo = MEMORY ? conversationMemory({ file: MEMORY_FILE, userName: USER_NAME }) : null
+  if (convo) openConversations.add(convo)
+
   /**
    * Which question the agent is currently answering.
    *
@@ -1323,6 +1344,8 @@ wss.on('connection', (socket) => {
     // interface is the interface talking about itself, not work being done for
     // the user, and the badge would be describing the very thing they can see.
     if (name.startsWith('mcp__jarvis_ui__')) return
+    // Remembering is something a person does without saying "working on it".
+    if (name.startsWith('mcp__jarvis_memory__')) return
     if (decideTool(name)) return sendTurn({ type: 'tool', name })
     if (id) heldTools.set(id, name)
   }
@@ -1370,24 +1393,34 @@ wss.on('connection', (socket) => {
           : {
               jarvis_skills: skillsServer({
                 stateDir: SKILLS_STATE,
-                disabled: DISABLED,
+                // Memory has its own server below; the older tools here would
+                // be a second, lesser copy of it.
+                disabled: new Set([...DISABLED, 'memory']),
                 allowWrites: ALLOW_WRITES,
                 // Both go to the face, which acts once his goodbye is spoken.
                 power: (mode) => {
                   send({ type: 'power', mode })
+                  // Asleep or off, the conversation is over: note it.
+                  void convo?.end()
                   // A face that never reports back must not leave him running.
                   if (mode === 'shutdown') setTimeout(shutdownJarvis, 30_000).unref()
                 },
                 mic: (muted) => send({ type: 'mic', muted }),
               }),
             }),
+        // Long-term memory: facts about the user, notes of past conversations.
+        ...(MEMORY ? { jarvis_memory: memoryServer({ file: MEMORY_FILE }) } : {}),
       },
       // A plain system prompt, not the claude_code preset. The preset is
       // tuned for a coding agent — verbose, file-oriented, and a large chunk
       // of input tokens on every turn. Replacing it makes the persona stick,
       // keeps answers short enough to speak, and cuts cost per turn.
       // Re-read per connection so an edited routine needs a reload, not a restart.
-      systemPrompt: SYSTEM_PROMPT + customSkillsPrompt(SKILLS_DIR),
+      // Memory too, so what he remembers is current from the first word.
+      systemPrompt:
+        SYSTEM_PROMPT +
+        (MEMORY ? memoryPrompt(MEMORY_FILE, USER_NAME) : '') +
+        customSkillsPrompt(SKILLS_DIR),
       // Run from JARVIS's own workspace rather than the home directory. MCP
       // discovery does not depend on it — settingSources is empty and the
       // servers are passed in explicitly above — and file tools resolve
@@ -1537,6 +1570,7 @@ wss.on('connection', (socket) => {
             // nothing to say — the HUD stops spinning and JARVIS stands there
             // silent. Say what happened instead.
             if (msg.subtype === 'success') {
+              convo?.said(msg.result)
               sendTurn({
                 type: 'done',
                 text: msg.result ?? '',
@@ -1633,6 +1667,7 @@ wss.on('connection', (socket) => {
       const id = typeof msg.id === 'string' ? msg.id : null
       void settling.then(() => {
         answering = id
+        convo?.heard(text)
         if (deliver) {
           const resolve = deliver
           deliver = null
@@ -1675,6 +1710,10 @@ wss.on('connection', (socket) => {
   socket.on('close', () => {
     console.log('[jarvis] client disconnected')
     stopAnnouncing()
+    if (convo) {
+      openConversations.delete(convo)
+      void convo.end()
+    }
     closed = true
     deliver?.(null)
     session.close?.()
