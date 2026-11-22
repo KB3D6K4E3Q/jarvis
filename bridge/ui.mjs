@@ -312,6 +312,22 @@ Use it when the user says clear the screen, or when a topic is finished and the
 leftovers from the last one would confuse what comes next. It does not touch the
 theme, the reactor or the orbits — \`ui_reset\` does that.`
 
+const DIVE_DESCRIPTION = `Fly the camera into the reactor — the scroll dive, under your own hand.
+
+Scrolling the wheel over the reactor does this: the dust gathers into orbit
+rings, the camera passes through them, and an open starfield opens out behind.
+This is the same journey, driven by voice, so you can take the user there when
+they ask you to rather than waiting for them to reach for the trackpad.
+
+  0.0  the reactor at rest, where it always sits
+  0.3  the rings formed around the core
+  0.6  passing through them
+  1.0  out in the starfield
+
+The scene eases toward whatever you set, so it reads as travel rather than a
+cut. Bring it home with 0 when the moment is over — a user left out among the
+stars cannot see the panels.`
+
 const RESET_DESCRIPTION = `Put the entire interface back to stock.
 
 Colours, reactor, orbits, chrome — everything returns to the way it looks on a
@@ -483,6 +499,31 @@ export function uiServer(emit) {
           const what = args.what ?? 'all'
           emit('screen', { what })
           return ok('Cleared.')
+        },
+      ),
+
+      tool(
+        'ui_dive',
+        DIVE_DESCRIPTION,
+        {
+          depth: looseNumber(
+            'How far in, 0 to 1. 0 is the reactor at rest, 0.3 the rings ' +
+              'formed, 0.6 passing through them, 1 out in the starfield.',
+          ),
+        },
+        async (args) => {
+          const depth = clamp(args.depth, 0, 1)
+          if (depth === undefined) {
+            return refuse('Not moved: the dive needs a depth between 0 and 1.')
+          }
+          emit('dive', { depth })
+          return ok(
+            depth === 0
+              ? 'Camera home.'
+              : depth >= 0.9
+                ? 'Out in the starfield.'
+                : `Diving to ${depth}.`,
+          )
         },
       ),
 

@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { Scene } from './scene/Scene'
 import { Hud } from './ui/Hud'
 import { Dive } from './ui/Dive'
+import { dive, clamp01 } from './lib/dive'
 import { Boot } from './ui/Boot'
 import { Ignition } from './ui/Ignition'
 import { Diagnostics } from './ui/Diagnostics'
@@ -498,10 +499,19 @@ export default function App() {
           break
         case 'reset':
           s.resetUi()
+          dive.target = 0
           break
         case 'screen':
           s.clearScreen(a.what ?? 'all')
           break
+        // The scroll dive, driven by voice instead of the wheel. The scene
+        // eases toward the target exactly as it does for a trackpad, so this
+        // reads as JARVIS flying the camera rather than a cut.
+        case 'dive': {
+          const depth = Number((a as { depth?: unknown }).depth)
+          if (Number.isFinite(depth)) dive.target = clamp01(depth)
+          break
+        }
         default:
           console.warn('[jarvis] unknown ui op:', op, args)
       }
