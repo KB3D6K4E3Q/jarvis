@@ -59,10 +59,12 @@ let SILENT_LEVEL: Float = 0.15
 let MIN_BODY_S = 0.002
 /**
  * ...and at least one of the claps must ring this long. A finger snap is as
- * sharp as a clap but shorter: snaps measured 3 to 4.4 ms here, while every
- * real double clap had at least one clap of 10 ms or more.
+ * sharp as a clap but shorter: snaps measured 3 to 4.4 ms here. The first
+ * claps measured all had one of 10 ms or more, so this was 8 ms; later, louder
+ * claps on the same Mac rang only 3 to 6.5 ms and none of them got through.
+ * 5 ms keeps a margin over the longest snap and lets those claps start it.
  */
-let PAIR_BODY_S = 0.008
+let PAIR_BODY_S = 0.005
 /** Log every sharp sound and why it was or wasn't a clap (JARVIS_CLAP_DEBUG=0 to quiet it). */
 let DEBUG = ProcessInfo.processInfo.environment["JARVIS_CLAP_DEBUG"] != "0"
 /** After a start, ignore claps for this long. */
