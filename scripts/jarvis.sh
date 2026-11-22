@@ -86,7 +86,11 @@ open_face() {
     --app="$URL/?auto=1" \
     --autoplay-policy=no-user-gesture-required \
     --no-first-run --no-default-browser-check \
+    --start-fullscreen \
     --window-size=1440,900
+  # Fullscreen from the first frame; the window size is what it drops back to
+  # on Cmd+Ctrl+F. Chrome's own fullscreen, not the page's: Esc would end the
+  # page kind, and Esc is already how JARVIS is stood down.
 }
 
 close_face() {
