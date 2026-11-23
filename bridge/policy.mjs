@@ -160,6 +160,13 @@ export function decideTool(name, allowWrites = false) {
     // whole server in the default read-only mode, which is what it is for.
     if (server === 'jarvis_skills') return true
 
+    // Background jobs. The tools here only start, list, read back and stop a
+    // job; the job itself is a second query() built with read-only tools, so
+    // nothing it can do depends on this decision. Named explicitly because
+    // `task_start` and `task_cancel` read as writes to the verb rules, which
+    // would withhold the whole surface in the default read-only mode.
+    if (server === 'jarvis_tasks') return true
+
     // Memory writes only to its own file in JARVIS's state folder.
     if (server === 'jarvis_memory') return true
 

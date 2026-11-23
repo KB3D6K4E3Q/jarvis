@@ -23,6 +23,7 @@ import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { customSkillsPrompt, onAnnounce, PROMPT_SKILLS, seedSkills, skillsServer, unmuteMic } from './skills.mjs'
 import { attachFace } from './routines.mjs'
+import { PROMPT_TASKS, tasksServer } from './tasks.mjs'
 import { conversationMemory, memoryFile, memoryPrompt, memoryServer, openConversations } from './memory.mjs'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -552,6 +553,7 @@ const SYSTEM_PROMPT = [
   DISABLED.has('browser') ? '' : PROMPT_BROWSER,
   DISABLED.has('camera') ? '' : PROMPT_EYES,
   DISABLED.has('skills') ? '' : PROMPT_SKILLS,
+  DISABLED.has('tasks') ? '' : PROMPT_TASKS,
   PROMPT_TOOLS,
 ].join('')
 
@@ -1462,6 +1464,20 @@ wss.on('connection', (socket) => {
             }),
         // Long-term memory: facts about the user, notes of past conversations.
         ...(MEMORY ? { jarvis_memory: memoryServer({ file: MEMORY_FILE }) } : {}),
+        // Long jobs. Each one is a second query() of its own, running beside
+        // this conversation rather than inside it, so a ten-minute piece of
+        // research does not hold a voice turn open for ten minutes. The engine
+        // is shared across connections — the job outlives the socket that
+        // started it — and reports back through the same faces routines use.
+        ...(DISABLED.has('tasks')
+          ? {}
+          : {
+              jarvis_tasks: tasksServer({
+                stateDir: SKILLS_STATE,
+                model: MODEL,
+                cwd: WORKSPACE,
+              }),
+            }),
       },
       // A plain system prompt, not the claude_code preset. The preset is
       // tuned for a coding agent — verbose, file-oriented, and a large chunk

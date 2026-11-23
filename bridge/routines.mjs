@@ -606,6 +606,15 @@ function hostFromFaces(notify) {
   }
 }
 
+/**
+ * The same faces, for anything else in the bridge that needs to speak
+ * unprompted — background jobs reporting back. One shared set, so a job and a
+ * routine cannot both seize the same face at once.
+ */
+export function faceHost(notify = () => {}) {
+  return hostFromFaces(notify)
+}
+
 /** Start the scheduler once per process. `notify` is the no-face fallback. */
 export function startRoutines({ stateDir, notify = () => {} }) {
   if (engine) return engine
