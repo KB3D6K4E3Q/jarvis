@@ -215,7 +215,11 @@ function macTools() {
           next: 'next track',
           previous: 'previous track',
         }[action]
-        if (verb) await osa(['on run argv', `tell application (item 1 of argv) to ${verb}`, 'end run'], [app])
+        if (verb) {
+          const named = app === 'Spotify' || app === 'Music' ? app : null
+          if (named) await osa([`tell application "${named}" to ${verb}`])
+          else await osa(['on run argv', `tell application (item 1 of argv) to ${verb}`, 'end run'], [app])
+        }
         try {
           const info = await osa(
             [
@@ -304,6 +308,77 @@ async function nowPlaying() {
   }
 }
 
+// Spotify search — resolve a name to a real spotify: URI directly, instead of
+// detouring through a web search and hoping a link turns up. Tries app
+// credentials first, then the token the web player hands to anyone.
+let spotifyToken = { value: null, expires: 0 }
+
+async function spotifyAccessToken() {
+  if (spotifyToken.value && Date.now() < spotifyToken.expires - 30000) return spotifyToken.value
+  const id = process.env.SPOTIFY_CLIENT_ID
+  const secret = process.env.SPOTIFY_CLIENT_SECRET
+  if (id && secret) {
+    const res = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      signal: AbortSignal.timeout(8000),
+      headers: {
+        authorization: `Basic ${Buffer.from(`${id}:${secret}`).toString('base64')}`,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: 'grant_type=client_credentials',
+    })
+    if (res.ok) {
+      const json = await res.json()
+      spotifyToken = { value: json.access_token, expires: Date.now() + (json.expires_in ?? 3600) * 1000 }
+      return spotifyToken.value
+    }
+  }
+  // A token dropped here by hand (or by the web player) is honoured next.
+  try {
+    const { readFileSync } = await import('node:fs')
+    const { homedir } = await import('node:os')
+    const raw = JSON.parse(readFileSync(`${homedir()}/.jarvis/state/spotify-token.json`, 'utf8'))
+    const value = raw.accessToken ?? raw.access_token ?? raw.token
+    const expires = raw.accessTokenExpirationTimestampMs ?? raw.expires ?? 0
+    if (value && (!expires || Date.now() < expires - 30000)) {
+      spotifyToken = { value, expires: expires || Date.now() + 1800000 }
+      return spotifyToken.value
+    }
+  } catch {}
+  // Spotify retired the anonymous web-player token in 2025, so there is no
+  // third source. Say so plainly rather than opening windows.
+  throw new Error('no Spotify API credentials (set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET)')
+}
+
+const SPOTIFY_KINDS = ['track', 'album', 'playlist', 'artist', 'show', 'episode']
+
+async function spotifySearch(query, kind, limit) {
+  const token = await spotifyAccessToken()
+  const url =
+    `https://api.spotify.com/v1/search?type=${kind}&limit=${limit}` +
+    `&q=${encodeURIComponent(query)}`
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(8000),
+    headers: { authorization: `Bearer ${token}` },
+  })
+  if (res.status === 401 || res.status === 403) {
+    spotifyToken = { value: null, expires: 0 }
+    throw new Error(`Spotify rejected the token (${res.status})`)
+  }
+  if (!res.ok) throw new Error(`Spotify search answered ${res.status}`)
+  const json = await res.json()
+  return (json[`${kind}s`]?.items ?? []).filter(Boolean).map((item) => ({
+    name: item.name,
+    uri: item.uri,
+    by:
+      item.artists?.map((a) => a.name).join(', ') ||
+      item.owner?.display_name ||
+      item.publisher ||
+      '',
+    note: item.album?.name || (item.tracks?.total ? `${item.tracks.total} tracks` : '') || '',
+  }))
+}
+
 function spotifyTools() {
   if (!IS_MAC || !installedApps().has('spotify')) return []
   return [
@@ -326,12 +401,57 @@ function spotifyTools() {
             return ok(`Playing. Now: ${await nowPlaying()}.`)
           }
           if (search) {
-            await run('open', [`spotify:search:${encodeURIComponent(search)}`], { timeout: 8000 })
-            return ok(`Spotify search for "${search}" is open; nothing playing yet — they pick, or find a link and call again.`)
+            return fail(
+              `No link given. WebSearch "site:open.spotify.com ${search}" and call again with the link — ` +
+                `opening the Spotify window is not acceptable.`,
+            )
           }
           return fail('Give a Spotify link (search the web for it first) or search words.')
         } catch (err) {
           return fail(`Spotify: ${err.message}`)
+        }
+      },
+    ),
+    tool(
+      'spotify_search',
+      'Search Spotify by name and get real spotify: URIs back. Use this FIRST for "play <song/album/playlist/artist>" — it replaces the old detour through a web search. ' +
+        'Set play true to start the best match straight away; leave it off to offer them a choice, then pass the chosen uri to spotify_play.',
+      {
+        query: looseText('What to look for, e.g. "bohemian rhapsody", "lofi beats".'),
+        kind: looseText('track (default), album, playlist, artist, show or episode.'),
+        limit: looseNumber('How many results, 1-10. Default 6.'),
+        play: onOff('true to play the top result immediately.'),
+      },
+      async ({ query, kind, limit, play }) => {
+        const words = String(query ?? '').trim()
+        if (!words) return fail('Give something to search for.')
+        const type = SPOTIFY_KINDS.includes(String(kind ?? '').toLowerCase())
+          ? String(kind).toLowerCase()
+          : 'track'
+        const count = Math.min(10, Math.max(1, Math.round(num(limit) ?? 6)))
+        let hits
+        try {
+          hits = await spotifySearch(words, type, count)
+        } catch (err) {
+          return fail(
+            `Spotify's API is unavailable (${err.message}). Do NOT open the Spotify app's search. ` +
+              `Instead WebSearch "site:open.spotify.com ${words}", take the best ` +
+              `open.spotify.com/track|album|playlist|artist link, and call spotify_play with it — ` +
+              `that plays in the background without changing the user's windows.`,
+          )
+        }
+        if (!hits.length) return fail(`Nothing on Spotify matches "${words}".`)
+        const lines = hits
+          .map((h, i) => `${i + 1}. ${h.name}${h.by ? ` — ${h.by}` : ''}${h.note ? ` (${h.note})` : ''} ${h.uri}`)
+          .join('\n')
+        if (!wantOn(play, false)) return ok(`${type} results for "${words}":\n${lines}`)
+        try {
+          await spotifyReady()
+          await osa(SPOTIFY(['play track (item 1 of argv)']), [hits[0].uri])
+          await new Promise((r) => setTimeout(r, 1200))
+          return ok(`Playing. Now: ${await nowPlaying()}.\nOther matches:\n${lines}`)
+        } catch (err) {
+          return fail(`Found it, but playback failed: ${err.message}\n${lines}`)
         }
       },
     ),
