@@ -152,6 +152,13 @@ stop() {
     done
   done
   close_face
+  # Wait until he is really gone. Returning while the ports and the window are
+  # still closing made `stop && start` a no-op: start saw them, took JARVIS for
+  # already running, and then watched him finish exiting.
+  for _ in $(seq 1 20); do
+    listening "$BRIDGE_PORT" || listening "$FACE_PORT" || face_open || break
+    sleep 0.25
+  done
   restore_mic
   notify "JARVIS is off."
 }
