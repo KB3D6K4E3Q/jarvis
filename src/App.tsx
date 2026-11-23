@@ -61,6 +61,20 @@ const AWAIT_SPEECH_MS = 14000
  *  again to continue a thought. */
 const FOLLOW_UP_MS = 11000
 
+/**
+ * Speak a failure on the turn's own speaker. Best effort: if speech itself is
+ * what failed, the message is already on screen and there is nothing better to
+ * fall back to, so a second failure here is logged rather than thrown.
+ */
+async function sayAloud(spk: ReturnType<typeof createSpeaker>, text: string): Promise<void> {
+  try {
+    spk.say(text)
+    await spk.end()
+  } catch (err) {
+    console.warn('[jarvis] could not speak the error:', err)
+  }
+}
+
 /** crypto.randomUUID needs a secure context, which a LAN address over plain
  *  http is not. Not worth failing a whole turn over an id. */
 const newId = () =>
@@ -214,9 +228,11 @@ export default function App() {
       if (stale()) return
       console.error(err)
       sfx.play('error')
-      store
-        .getState()
-        .setError(err instanceof Error ? err.message : 'Something went wrong.')
+      const message = err instanceof Error ? err.message : 'Something went wrong.'
+      store.getState().setError(message)
+      // Say it, too. Shown on screen only, a failed turn looked exactly like
+      // being ignored: he listened, went quiet and went back to standby.
+      await sayAloud(spk, message)
     } finally {
       if (!stale()) {
         speaker.current = null

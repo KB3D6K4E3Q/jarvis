@@ -32,6 +32,7 @@ import { isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
 import { probeUrl, renderPage } from './page.mjs'
 import { BRIDGE_PORT } from './port.mjs'
+import { accountFailure } from './failures.mjs'
 import {
   builtinTools,
   checkToolUse,
@@ -1570,7 +1571,14 @@ wss.on('connection', (socket) => {
             // empty text is indistinguishable from a turn that simply had
             // nothing to say — the HUD stops spinning and JARVIS stands there
             // silent. Say what happened instead.
-            if (msg.subtype === 'success') {
+            // An expired sign-in is the same trap from the other side: the
+            // CLI reports it as a *successful* turn whose text is the error,
+            // and nothing was ever streamed for the face to speak.
+            const broken = msg.subtype === 'success' ? accountFailure(msg.result) : null
+            if (broken) {
+              console.error(`[jarvis] account problem: ${msg.result}`)
+              sendTurn({ type: 'error', message: broken })
+            } else if (msg.subtype === 'success') {
               convo?.said(msg.result)
               sendTurn({
                 type: 'done',
