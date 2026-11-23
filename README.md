@@ -193,6 +193,28 @@ the bridge (`/img` and `/media`, both SSRF-guarded), so hotlink-blocked news
 thumbnails still appear and the page never beacons your IP to a host the model
 chose.
 
+### Routines
+
+Reminders fire once. Routines are the things JARVIS does on his own, again and
+again (`bridge/routines.mjs`), set up and changed by voice:
+
+- *"Every weekday at 8:30, brief me on the weather and the news."*
+- *"Every hour between 9 and 5, remind me to drink water."*
+- *"On the last day of the month, remind me to send the invoice."*
+- *"When I start you up, tell me what's on today."*
+- *"If I've been quiet for half an hour, check in."*
+- *"Move the briefing to 8:45."* · *"Pause the water reminders."*
+- *"Don't talk to me unprompted between 23:00 and 07:00."*
+
+A routine either **says** fixed words or **does** an instruction: JARVIS takes
+an unprompted turn, uses his tools and speaks the result. A routine that falls
+due while he is answering, or while you are mid-sentence, waits. It waits only as
+long as it still makes sense: two hours for fixed words, 45 minutes for an
+instruction. After that it is skipped until next time. With the page closed,
+fixed words arrive as a macOS notification. During quiet hours, idle check-ins
+are held back, but anything set for an exact time still runs. Routines live in
+`~/.jarvis/state/routines.json`.
+
 ---
 
 ## Controls
@@ -236,7 +258,7 @@ Everything is optional in bridge mode. Frontend settings live in `.env.local`
 | `JARVIS_ALLOW_WRITES` | off | `1` allows effectful tools (see below) |
 | `JARVIS_MCP_SERVERS` | all configured | Comma-separated `~/.claude.json` servers to pass on; empty passes none |
 | `JARVIS_ACCOUNT_CONNECTORS` | off | `1` lets your claude.ai account's connectors join the session |
-| `JARVIS_DISABLE` | none | Comma-separated capabilities to leave out: `browser`, `camera`, `interface` |
+| `JARVIS_DISABLE` | none | Comma-separated capabilities to leave out: `browser`, `camera`, `interface`, `routines` |
 | `JARVIS_ALLOWED_ORIGINS` | local dev | Extra WebSocket origins to accept |
 | `JARVIS_ALLOW_NO_ORIGIN` | off | Accept connections with no `Origin` header |
 | `JARVIS_WORKSPACE` | `~/.jarvis/workspace` | The agent's working directory; file tools are confined to it and the temp directory |

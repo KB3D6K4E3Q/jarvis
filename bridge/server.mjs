@@ -22,6 +22,7 @@ import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { customSkillsPrompt, onAnnounce, PROMPT_SKILLS, seedSkills, skillsServer, unmuteMic } from './skills.mjs'
+import { attachFace } from './routines.mjs'
 import { conversationMemory, memoryFile, memoryPrompt, memoryServer, openConversations } from './memory.mjs'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -1340,6 +1341,50 @@ wss.on('connection', (socket) => {
    */
   const SETTLE_CAP_MS = 400
 
+  /**
+   * Every turn still owed a result, oldest first, by the id it answers.
+   *
+   * `answering` says whose turn is streaming now, which is right for the
+   * deltas, but a result can arrive after the next question has already taken
+   * that slot: a routine turn cut short by a barge-in, winding down past the
+   * settle cap. The SDK reports exactly one result per turn, in order, so
+   * each result takes the oldest id here, and that id decides whose it is.
+   * The length is also what the routine engine reads as "busy": a barge-in
+   * leaves two turns owed — the cancelled one and the question that cut in.
+   */
+  let turns = []
+  let lastHeard = Date.now()
+  let routineTurns = 0
+  const ROUTINE_TURN = 'routine:'
+  const isRoutine = (id) => typeof id === 'string' && id.startsWith(ROUTINE_TURN)
+
+  /** Hand text to the SDK's input generator, now or when it next asks. */
+  const deliverText = (text) => {
+    if (deliver) {
+      const resolve = deliver
+      deliver = null
+      resolve(text)
+    } else {
+      inbox.push(text)
+    }
+  }
+
+  const interruptTurn = () => {
+    // Marks the turn in flight as cancelled on purpose, so the failed result
+    // it is about to produce is not reported as a fault.
+    cancelledAsk = answering
+    // Held so the next question can wait for it rather than racing it.
+    const stopped = turnFinished()
+    settling = Promise.resolve(session.interrupt?.())
+      .catch(() => {})
+      .then(() =>
+        Promise.race([
+          stopped,
+          new Promise((r) => setTimeout(r, SETTLE_CAP_MS)),
+        ]),
+      )
+  }
+
   const announceTool = (id, name) => {
     if (!name || (id && seenTools.has(id))) return
     if (id) seenTools.add(id)
@@ -1579,30 +1624,42 @@ wss.on('connection', (socket) => {
             // An expired sign-in is the same trap from the other side: the
             // CLI reports it as a *successful* turn whose text is the error,
             // and nothing was ever streamed for the face to speak.
+            const turn = turns.length ? turns[0] : answering
+            turns = turns.slice(1)
+            const sendResult = (m) => send({ ...m, ask: turn })
             const broken = msg.subtype === 'success' ? accountFailure(msg.result) : null
             if (broken) {
               console.error(`[jarvis] account problem: ${msg.result}`)
-              sendTurn({ type: 'error', message: broken })
+              sendResult({ type: 'error', message: broken })
+            } else if (msg.subtype === 'success' && isRoutine(turn)) {
+              // Nobody asked, so there is no listener for a 'done'.
+              const said = String(msg.result ?? '').trim()
+              convo?.said(said)
+              if (said) send({ type: 'announce', text: said, kind: 'routine' })
             } else if (msg.subtype === 'success') {
               convo?.said(msg.result)
-              sendTurn({
+              sendResult({
                 type: 'done',
                 text: msg.result ?? '',
                 costUsd: msg.total_cost_usd ?? null,
               })
-            } else if (cancelledAsk !== null && cancelledAsk === answering) {
+            } else if (cancelledAsk !== null && cancelledAsk === turn) {
               // Cancelled on purpose. The client bumps its turn counter before
               // interrupting, so it is already discarding anything tagged with
               // this id — sending an error would be a message nobody reads,
               // and logging one puts a failure in the log for a feature that
               // worked.
               console.log('[jarvis] turn interrupted')
+            } else if (isRoutine(turn)) {
+              // Nobody is waiting on it, so it is not spoken: the next run
+              // tries again, and the log says what went wrong.
+              console.error(`[jarvis] routine turn failed: ${msg.subtype}`, msg.errors ?? '')
             } else {
               console.error(
                 `[jarvis] turn failed: ${msg.subtype}`,
                 msg.errors ?? '',
               )
-              sendTurn({
+              sendResult({
                 type: 'error',
                 message: RESULT_FAILURES[msg.subtype] ?? RESULT_FAILURES.default,
               })
@@ -1679,16 +1736,17 @@ wss.on('connection', (socket) => {
        */
       const text = msg.text
       const id = typeof msg.id === 'string' ? msg.id : null
+      lastHeard = Date.now()
+      // A routine speaking unprompted gives way to the user, the way JARVIS
+      // himself does when they barge in. Once: a second question inside the
+      // settle window must not interrupt the same turn again.
+      if (turns.length && isRoutine(answering) && cancelledAsk !== answering) interruptTurn()
+      // Queued now, in arrival order — the order the settle chain delivers in.
+      turns = [...turns, id]
       void settling.then(() => {
         answering = id
         convo?.heard(text)
-        if (deliver) {
-          const resolve = deliver
-          deliver = null
-          resolve(text)
-        } else {
-          inbox.push(text)
-        }
+        deliverText(text)
       })
     }
 
@@ -1701,29 +1759,30 @@ wss.on('connection', (socket) => {
       }
     }
 
-    if (msg.type === 'interrupt') {
-      // Marks the turn in flight as cancelled on purpose, so the failed result
-      // it is about to produce is not reported as a fault.
-      cancelledAsk = answering
-      // Held so the next question can wait for it rather than racing it.
-      const stopped = turnFinished()
-      settling = Promise.resolve(session.interrupt?.())
-        .catch(() => {})
-        .then(() =>
-          Promise.race([
-            stopped,
-            new Promise((r) => setTimeout(r, SETTLE_CAP_MS)),
-          ]),
-        )
-    }
+    if (msg.type === 'interrupt') interruptTurn()
   })
 
   // A timer or reminder going off speaks on this face.
   const stopAnnouncing = onAnnounce((alert) => send({ type: 'announce', ...alert }))
 
+  // Routines speak, and take unprompted turns, through this face. A routine
+  // turn's own stream is tagged with an id the browser never sent, so it is
+  // ignored there; its finished answer arrives as an announcement instead.
+  const detachFace = attachFace({
+    busy: () => turns.length > 0,
+    lastHeard: () => lastHeard,
+    say: (text) => send({ type: 'announce', text, kind: 'routine' }),
+    prompt: (text) => {
+      answering = `${ROUTINE_TURN}${++routineTurns}`
+      turns = [...turns, answering]
+      deliverText(text)
+    },
+  })
+
   socket.on('close', () => {
     console.log('[jarvis] client disconnected')
     stopAnnouncing()
+    detachFace()
     if (convo) {
       openConversations.delete(convo)
       void convo.end()

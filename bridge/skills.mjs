@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, copyFi
 import { homedir, platform } from 'node:os'
 import { basename, dirname, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { PROMPT_ROUTINES, routineTools, startRoutines } from './routines.mjs'
 
 /**
  * The `jarvis_skills` tools — everyday abilities that live in this process.
@@ -14,6 +15,8 @@ import { fileURLToPath } from 'node:url'
  *                 A fixed list of actions with fixed arguments — never a shell.
  *   Timers        countdowns and reminders that survive a restart and speak
  *                 when they go off (a macOS notification if the face is closed).
+ *   Routines      repeating and unprompted things, with quiet hours — see
+ *                 routines.mjs.
  *   Memory        things the user asks JARVIS to remember, in a JSON file.
  *   Weather       Open-Meteo, which needs no account or key.
  *
@@ -1298,6 +1301,10 @@ export function skillsServer({ stateDir, disabled = new Set(), allowWrites = fal
     startTimers(stateDir)
     tools.push(...timerTools())
   }
+  if (!disabled.has('timers') && !disabled.has('routines')) {
+    const routines = startRoutines({ stateDir, notify: (text) => notifyMac('JARVIS', text) })
+    tools.push(...routineTools(routines))
+  }
   if (!disabled.has('memory')) tools.push(...memoryTools(stateDir))
   if (!disabled.has('weather')) tools.push(...weatherTools(stateDir))
   return createSdkMcpServer({ name: 'jarvis_skills', version: '1.0.0', tools })
@@ -1309,7 +1316,7 @@ export const PROMPT_SKILLS = `Your everyday skills (the jarvis_skills tools):
 - Timers and reminders: set them without asking for confirmation. Repeat the
   time back once, briefly. When one fires you will hear about it and say it.
   Call time_now first if you need today's date or the time to work it out.
-- Memory: when they say "remember…" save it; when they ask something personal
+${PROMPT_ROUTINES}- Memory: when they say "remember…" save it; when they ask something personal
   ("where did I put…", "what's my…") search memory before saying you don't know.
   Never read every memory aloud unless asked.
 - Weather: lead with what matters ("Cold and wet, eight degrees"), not every number.
