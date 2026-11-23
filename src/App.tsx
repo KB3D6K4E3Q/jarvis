@@ -151,7 +151,6 @@ export default function App() {
     const s = store.getState()
     s.setCaption('')
     s.setActiveTool(null)
-    music.working(false)
     music.duck(false)
     sfx.duck(false)
     s.setPhase('dormant')
@@ -202,7 +201,6 @@ export default function App() {
             // The answer arriving is what ends the tool phase — a timer would
             // clear the readout while a slow tool was still running.
             store.getState().setActiveTool(null)
-            music.working(false)
             store.getState().pushTurn({ id: turnId, role: 'jarvis', text: '' })
           }
           store.getState().appendToLastTurn(delta)
@@ -217,7 +215,6 @@ export default function App() {
           if (!started) store.getState().setPhase('tooling')
           store.getState().setActiveTool(name)
           sfx.play('tool')
-          music.working(true)
           // Say something the moment work starts — a tool can take ten seconds
           // and silence that long reads as a crash. Once per turn only; a
           // chain of five tools shouldn't produce five apologies.
@@ -258,7 +255,6 @@ export default function App() {
         sfx.duck(false)
         music.duck(false)
         store.getState().setActiveTool(null)
-        music.working(false)
         const power = pendingPower.current
         pendingPower.current = null
         if (power) {
@@ -342,7 +338,6 @@ export default function App() {
       turn.current++
       interrupt()
       store.getState().setActiveTool(null)
-      music.working(false)
       sfx.duck(false)
       music.duck(false)
     }
