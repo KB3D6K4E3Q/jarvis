@@ -2188,3 +2188,217 @@ kbd {
   opacity: 0.22;
   text-shadow: none;
 }
+
+/* ------------------------------------------------------------- holo desk
+   The room through the webcam, mirrored and graded to the HUD, with glass
+   panels over it. Above everything but the hand skeleton (95) and the camera
+   indicator (96), so a pinch is always drawn on top of what it is grabbing. */
+.holo-desk {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: #000;
+  overflow: hidden;
+  --holo: var(--interface);
+  --grab: #ffb547;
+}
+.holo-room {
+  /* Placed and sized inline by mirrorBox; stretched to that box exactly. */
+  position: absolute;
+  object-fit: fill;
+  transform: scaleX(-1);
+  opacity: 0;
+  filter: saturate(0.7) brightness(0.85) contrast(1.05);
+  transition: opacity 0.9s ease;
+}
+.holo-room-live { opacity: 1; }
+.holo-grade {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at center, transparent 45%, rgba(0, 12, 24, 0.55) 100%),
+    linear-gradient(rgba(0, 229, 255, 0.06), rgba(0, 229, 255, 0.06)),
+    repeating-linear-gradient(0deg, rgba(0, 229, 255, 0.035) 0 calc(1px * var(--hs, 1)), transparent calc(1px * var(--hs, 1)) calc(3px * var(--hs, 1)));
+  mix-blend-mode: screen;
+}
+.holo-tag {
+  position: absolute;
+  top: calc(16px * var(--hs, 1));
+  left: calc(18px * var(--hs, 1));
+  font: 600 calc(11px * var(--hs, 1))/1 'JetBrains Mono', monospace;
+  letter-spacing: 0.2em;
+  color: var(--holo);
+  opacity: 0.8;
+}
+.holo-failed {
+  position: absolute;
+  bottom: calc(118px * var(--hs, 1));
+  left: 50%;
+  transform: translateX(-50%);
+  color: #ff8a8a;
+  font: 500 calc(15px * var(--hs, 1))/1.4 'Chakra Petch', sans-serif;
+  text-align: center;
+}
+
+.holo-panel {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  background: rgba(4, 22, 36, 0.62);
+  border: calc(1px * var(--hs, 1)) solid color-mix(in srgb, var(--holo) 55%, transparent);
+  border-radius: calc(10px * var(--hs, 1));
+  box-shadow:
+    0 0 calc(24px * var(--hs, 1)) color-mix(in srgb, var(--holo) 22%, transparent),
+    inset 0 0 calc(18px * var(--hs, 1)) color-mix(in srgb, var(--holo) 10%, transparent);
+  backdrop-filter: blur(calc(6px * var(--hs, 1))) saturate(1.2);
+  color: #d8f8ff;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.holo-grabbed { cursor: grabbing; }
+.holo-grabbed {
+  border-color: var(--grab);
+  box-shadow: 0 0 calc(30px * var(--hs, 1)) color-mix(in srgb, var(--grab) 45%, transparent);
+}
+.holo-head {
+  display: flex;
+  align-items: center;
+  gap: calc(8px * var(--hs, 1));
+  padding: calc(8px * var(--hs, 1)) calc(10px * var(--hs, 1));
+  font: 600 calc(11px * var(--hs, 1))/1 'JetBrains Mono', monospace;
+  letter-spacing: 0.18em;
+  color: var(--holo);
+  border-bottom: calc(1px * var(--hs, 1)) solid color-mix(in srgb, var(--holo) 25%, transparent);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.holo-grabbed .holo-head { color: var(--grab); cursor: grabbing; }
+.holo-dot {
+  width: calc(6px * var(--hs, 1));
+  height: calc(6px * var(--hs, 1));
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 calc(8px * var(--hs, 1)) currentColor;
+}
+.holo-x {
+  margin-left: auto;
+  background: none;
+  border: 0;
+  color: inherit;
+  font-size: calc(16px * var(--hs, 1));
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.holo-x:hover { opacity: 1; }
+.holo-body { flex: 1; min-height: 0; position: relative; }
+
+.holo-clock { padding: calc(14px * var(--hs, 1)) calc(18px * var(--hs, 1)); }
+.holo-time {
+  font: 600 calc(44px * var(--hs, 1))/1 'Chakra Petch', sans-serif;
+  letter-spacing: 0.04em;
+  text-shadow: 0 0 calc(14px * var(--hs, 1)) color-mix(in srgb, var(--holo) 60%, transparent);
+}
+.holo-date { margin-top: calc(6px * var(--hs, 1)); font-size: calc(13px * var(--hs, 1)); opacity: 0.75; }
+.holo-secs {
+  margin-top: calc(12px * var(--hs, 1));
+  height: calc(2px * var(--hs, 1));
+  background: linear-gradient(90deg, var(--holo) calc(var(--s) * 100%), color-mix(in srgb, var(--holo) 15%, transparent) 0);
+}
+
+.holo-model { position: absolute; inset: 0; }
+.holo-model-tag {
+  position: absolute;
+  bottom: calc(8px * var(--hs, 1));
+  left: 0;
+  right: 0;
+  text-align: center;
+  font: 500 calc(10px * var(--hs, 1))/1 'JetBrains Mono', monospace;
+  letter-spacing: 0.2em;
+  color: var(--holo);
+  opacity: 0.7;
+}
+
+.holo-log {
+  list-style: none;
+  margin: 0;
+  padding: calc(10px * var(--hs, 1)) calc(12px * var(--hs, 1));
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: calc(8px * var(--hs, 1));
+  font-size: calc(13px * var(--hs, 1));
+  line-height: 1.35;
+}
+.holo-turn span {
+  display: block;
+  font: 600 calc(9px * var(--hs, 1))/1 'JetBrains Mono', monospace;
+  letter-spacing: 0.2em;
+  margin-bottom: calc(3px * var(--hs, 1));
+  opacity: 0.6;
+}
+.holo-turn-jarvis span { color: var(--holo); opacity: 0.9; }
+.holo-empty { padding: calc(16px * var(--hs, 1)); opacity: 0.6; font-size: calc(13px * var(--hs, 1)); }
+
+.holo-status { margin: 0; padding: calc(12px * var(--hs, 1)) calc(16px * var(--hs, 1)); display: grid; gap: calc(10px * var(--hs, 1)); }
+.holo-status div { display: flex; justify-content: space-between; align-items: baseline; }
+.holo-status dt { font: 600 calc(10px * var(--hs, 1))/1 'JetBrains Mono', monospace; letter-spacing: 0.2em; opacity: 0.6; }
+.holo-status dd { margin: 0; font: 500 calc(13px * var(--hs, 1))/1 'JetBrains Mono', monospace; }
+.holo-ok { color: var(--holo); }
+.holo-off { opacity: 0.5; }
+
+.holo-dock {
+  position: absolute;
+  left: 50%;
+  bottom: calc(22px * var(--hs, 1));
+  transform: translateX(-50%);
+  display: flex;
+  gap: calc(14px * var(--hs, 1));
+}
+.holo-dock-btn {
+  width: calc(58px * var(--hs, 1));
+  height: calc(58px * var(--hs, 1));
+  border-radius: 50%;
+  border: calc(1px * var(--hs, 1)) solid color-mix(in srgb, var(--holo) 45%, transparent);
+  background: rgba(4, 22, 36, 0.55);
+  color: var(--holo);
+  display: grid;
+  place-items: center;
+  position: relative;
+  cursor: pointer;
+  backdrop-filter: blur(calc(4px * var(--hs, 1)));
+  transition: background 0.15s, box-shadow 0.15s, transform 0.15s;
+}
+.holo-dock-btn:hover { transform: translateY(-2px); }
+.holo-dock-btn svg {
+  width: calc(24px * var(--hs, 1));
+  height: calc(24px * var(--hs, 1));
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.holo-dock-btn span {
+  position: absolute;
+  top: calc(100% + calc(4px * var(--hs, 1)));
+  font: 500 calc(9px * var(--hs, 1))/1 'JetBrains Mono', monospace;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+  opacity: 0.7;
+}
+.holo-dock-on {
+  background: color-mix(in srgb, var(--holo) 22%, rgba(4, 22, 36, 0.55));
+  box-shadow: 0 0 calc(18px * var(--hs, 1)) color-mix(in srgb, var(--holo) 45%, transparent);
+}
+.holo-dock-exit { color: #ff7b7b; border-color: rgba(255, 123, 123, 0.5); }
+
+@media (prefers-reduced-motion: reduce) {
+  .holo-room, .holo-panel, .holo-dock-btn { transition: none; }
+}

@@ -126,6 +126,8 @@ const SKELETON_BETA = 0.02
 const REACH_X = 0.1
 const REACH_TOP = 0.08
 const REACH_BOTTOM = 0.16
+/** The same margins, for anything that draws the camera picture (the holo desk). */
+export const REACH = { x: REACH_X, top: REACH_TOP, bottom: REACH_BOTTOM } as const
 
 /**
  * Pinch thresholds, as a fraction of hand span rather than an absolute.

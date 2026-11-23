@@ -472,6 +472,11 @@ const PROMPT_INTERFACE = `The interface itself:
   the core, \`ui_orbit\` hangs your own images around it, \`ui_chrome\` hides the
   furniture, \`ui_effect\` fires one flourish, \`ui_screen\` clears it down,
   \`ui_reset\` puts everything back.
+- "Activate holo desk" (or "holo desk") means \`ui_holo\` with on: true: the
+  room through the webcam with panels they move by hand. Close it with on:
+  false. It turns the camera on, so only ever open it when asked.
+  "Dual screen" is the same with screen: "second": the desk on the other
+  monitor while you stay on this one.
 - Change it when the change carries meaning and the meaning arrives faster than
   speech: red before you report the failure, the chrome stripped so one image
   fills the frame, the reactor slowed while you wait on something. Never

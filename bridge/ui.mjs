@@ -312,6 +312,25 @@ Use it when the user says clear the screen, or when a topic is finished and the
 leftovers from the last one would confuse what comes next. It does not touch the
 theme, the reactor or the orbits — \`ui_reset\` does that.`
 
+const HOLO_DESCRIPTION = `Open or close the holo desk.
+
+The holo desk turns the whole screen into a mirror of the room through the
+webcam, with glass panels floating over it — a clock, a turning hologram of the
+reactor, the conversation, system status — that the user pinches and drags in
+the air with their hands. Hand tracking comes on with it.
+
+Open it only when the user asks for it: "activate holo desk", "holo desk",
+"open the desk", "show me the holo desk". It switches the camera on, so never
+open it on your own initiative. Close it when they say close, deactivate or
+that's enough.
+
+screen: "this" (the default) covers the JARVIS screen. "second" is dual screen:
+the desk opens on the other monitor and you stay on this one. Use "second"
+when they say "dual screen", "on the other monitor" or "on the second screen",
+and close it the same way (on: false, screen: "second"). With only one screen
+connected it opens here instead and says so. Say one short line as it opens ("Holo desk online, sir.") — the
+panels speak for themselves.`
+
 const DIVE_DESCRIPTION = `Fly the camera into the reactor — the scroll dive, under your own hand.
 
 Scrolling the wheel over the reactor does this: the dust gathers into orbit
@@ -524,6 +543,26 @@ export function uiServer(emit) {
                 ? 'Out in the starfield.'
                 : `Diving to ${depth}.`,
           )
+        },
+      ),
+
+      tool(
+        'ui_holo',
+        HOLO_DESCRIPTION,
+        {
+          on: looseBool('true opens the holo desk, false closes it.'),
+          screen: z
+            .enum(['this', 'second'])
+            .optional()
+            .catch(undefined)
+            .describe('"this" covers the JARVIS screen; "second" opens it on the other monitor (dual screen).'),
+        },
+        async (args) => {
+          const on = toBool(args.on) ?? true
+          const screen = args.screen ?? 'this'
+          emit('holo', { on, screen })
+          if (!on) return ok('Holo desk closed.')
+          return ok(screen === 'second' ? 'Holo desk online on the second screen.' : 'Holo desk online.')
         },
       ),
 

@@ -70,7 +70,12 @@ allow_mic() {
     let p = {}
     try { p = JSON.parse(fs.readFileSync(f, "utf8")) } catch {}
     const ex = (((p.profile ??= {}).content_settings ??= {}).exceptions ??= {})
-    for (const k of ["media_stream_mic"]) (ex[k] ??= {})["http://localhost:5173,*"] = { setting: 1 }
+    // The mic for the voice; the camera, pop-ups and window placement for the
+    // dual-screen holo desk, which JARVIS opens by voice — not a click — on
+    // the other monitor. Both names for window placement: Chrome renamed it.
+    // Automatic fullscreen lets that window fill the monitor the moment it
+    // opens, where a page would otherwise need a click first.
+    for (const k of ["media_stream_mic", "media_stream_camera", "popups", "window_placement", "window_management", "automatic_fullscreen"]) (ex[k] ??= {})["http://localhost:5173,*"] = { setting: 1 }
     fs.writeFileSync(f, JSON.stringify(p))
   ' "$PROFILE/Default/Preferences" 2>/dev/null || true
 }

@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'react'
 import { Scene } from './scene/Scene'
 import { Hud } from './ui/Hud'
 import { Dive } from './ui/Dive'
+import { HoloDesk } from './ui/HoloDesk'
+import { closeHoloWindow, openHoloOnSecondScreen } from './lib/holoWindow'
 import { dive, clamp01 } from './lib/dive'
 import { Boot, BOOT_MS } from './ui/Boot'
 import { Ignition } from './ui/Ignition'
@@ -60,6 +62,23 @@ const AWAIT_SPEECH_MS = 14000
  *  drops back to standby. Long enough that you don't have to say the name
  *  again to continue a thought. */
 const FOLLOW_UP_MS = 11000
+
+/**
+ * Dual screen: the holo desk on the other monitor, JARVIS staying on this one.
+ * With no second screen it falls back to the desk here, and says why on screen.
+ */
+async function openOrCloseDualScreen(on: boolean): Promise<void> {
+  const s = useStore.getState()
+  if (!on) {
+    closeHoloWindow()
+    s.setHolo(false)
+    return
+  }
+  const result = await openHoloOnSecondScreen()
+  if (result.placed) return
+  s.setHolo(true)
+  s.setError(`${result.reason} The holo desk is open here instead.`)
+}
 
 /**
  * Speak a failure on the turn's own speaker. Best effort: if speech itself is
@@ -515,6 +534,7 @@ export default function App() {
           break
         case 'reset':
           s.resetUi()
+          s.setHolo(false)
           dive.target = 0
           break
         case 'screen':
@@ -523,6 +543,17 @@ export default function App() {
         // The scroll dive, driven by voice instead of the wheel. The scene
         // eases toward the target exactly as it does for a trackpad, so this
         // reads as JARVIS flying the camera rather than a cut.
+        // The holo desk: the room through the webcam with panels over it.
+        // He opens it when asked to ("activate holo desk"), never on his own.
+        case 'holo': {
+          const { on, screen } = a as { on?: unknown; screen?: unknown }
+          if (screen === 'second') {
+            void openOrCloseDualScreen(Boolean(on))
+          } else {
+            s.setHolo(Boolean(on))
+          }
+          break
+        }
         case 'dive': {
           const depth = Number((a as { depth?: unknown }).depth)
           if (Number.isFinite(depth)) dive.target = clamp01(depth)
@@ -757,6 +788,13 @@ export default function App() {
         return
       }
 
+      // H opens and closes the holo desk, the same as asking for it.
+      if (e.key === 'h' && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault()
+        store.getState().setHolo(!store.getState().holo)
+        return
+      }
+
       // T speaks a fixed line, bypassing the wake word, the recogniser and the
       // model entirely. When "I can't hear him" is the report, this is the one
       // keypress that separates a broken voice engine from a broken voice loop
@@ -844,6 +882,7 @@ export default function App() {
     <>
       <Scene />
       <Dive />
+      <HoloDesk />
       <Hud />
       <Boot />
       <Diagnostics />
